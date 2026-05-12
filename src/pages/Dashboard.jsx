@@ -6,8 +6,8 @@ const AUTO_INTERVAL_MS = 10 * 60 * 1000   // 10 minutes
 const COST_IN  = 3  / 1_000_000 * 90      // ₹ per input token
 const COST_OUT = 15 / 1_000_000 * 90      // ₹ per output token
 const LOT_SIZE = 65
-const AUTO_TRADE_CE  = 10
-const AUTO_TRADE_PE  = -10
+const AUTO_TRADE_CE  = 8
+const AUTO_TRADE_PE  = -8
 const STOP_LOSS_RS   = 2000
 const FACTORS = [
   { key:'f1',  label:'VIX Analysis'    },
@@ -195,15 +195,29 @@ export default function Dashboard() {
         })
         const data = await res.json()
         if (data.orderId) {
-          const entry = r.entryHigh || 0
-          const sl    = entry - (STOP_LOSS_RS / LOT_SIZE)
-          const t     = { type, sym, entry, sl, orderId: data.orderId, time: new Date(), score }
+          const entry   = r.entryHigh || 0
+          const slPrice = Math.max(0.05, parseFloat((entry - (STOP_LOSS_RS / LOT_SIZE)).toFixed(2)))
+          const t       = { type, sym, entry, sl: slPrice, orderId: data.orderId, time: new Date(), score }
           setPosition(t)
           setTradeLog(l => [{ ...t, action:`AUTO BUY ${type} ✅` }, ...l.slice(0,29)])
           setDailyTrades(p => p + 1)
-          setOrderMsg(`✅ Auto-bought ${type} ${sym} @ market (OID: ${data.orderId})`)
+          // Fix 2: Place GTT stop-loss immediately after entry
+          let gttMsg = ""
+          try {
+            const gttRes = await fetch("/api/place-gtt", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ accessToken, tradingsymbol: sym,
+                slTriggerPrice: slPrice, currentPrice: entry, quantity: LOT_SIZE })
+            })
+            const gttData = await gttRes.json()
+            gttMsg = gttData.gttId
+              ? ` | GTT SL ₹${slPrice} ✅ GID:${gttData.gttId}`
+              : ` | GTT failed: ${gttData.error}`
+          } catch(ge) { gttMsg = ` | GTT err: ${ge.message}` }
+          setOrderMsg(`✅ Auto-bought ${type} ${sym} (OID:${data.orderId})${gttMsg}`)
         } else {
-          setOrderMsg(`⚠️ Order failed: ${data.error || 'Unknown'}`)
+          setOrderMsg(`⚠️ Order failed: ${data.error || "Unknown"}`)
         }
       } catch (e) {
         setOrderMsg(`⚠️ Trade error: ${e.message}`)
@@ -276,10 +290,15 @@ export default function Dashboard() {
   // ── Auto-analysis loop ───────────────────────────────────────────────────────
   useEffect(() => {
     if (autoOn && !stopped) {
-      analyse()
-      setCd(AUTO_INTERVAL_MS / 1000)
-      cdRef.current  = setInterval(() => setCd(p => p > 1 ? p - 1 : AUTO_INTERVAL_MS / 1000), 1000)
-      intRef.current = setInterval(() => { analyse(); setCd(AUTO_INTERVAL_MS / 1000) }, AUTO_INTERVAL_MS)
+      // Fix 1: Only run if market is open
+      if (isMarketOpen()) { analyse(); setCd(AUTO_INTERVAL_MS / 1000) }
+      else setCd(0)
+      cdRef.current = setInterval(() => {
+        if (isMarketOpen()) setCd(p => p > 1 ? p - 1 : AUTO_INTERVAL_MS / 1000)
+      }, 1000)
+      intRef.current = setInterval(() => {
+        if (isMarketOpen()) { analyse(); setCd(AUTO_INTERVAL_MS / 1000) }
+      }, AUTO_INTERVAL_MS)
     } else {
       clearInterval(intRef.current)
       clearInterval(cdRef.current)
@@ -453,15 +472,23 @@ export default function Dashboard() {
         </div>
         {autoOn && !stopped && (
           <div style={{ marginTop:10 }}>
-            <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'#4B5563', marginBottom:4 }}>
-              <span>Next analysis in</span>
-              <span style={{ color:'#F59E0B', ...mono, fontWeight:700 }}>
-                {Math.floor(cd/60)}:{String(cd%60).padStart(2,'0')}
-              </span>
-            </div>
-            <div style={{ height:3, background:'#1E2030', borderRadius:2 }}>
-              <div style={{ height:'100%', borderRadius:2, background:'linear-gradient(to right,#6366F1,#8B5CF6)', width:`${((600-cd)/600)*100}%`, transition:'width 1s linear' }} />
-            </div>
+            {!isMarketOpen() ? (
+              <div style={{ fontSize:11, color:'#F59E0B', background:'rgba(245,158,11,0.08)', padding:'8px 12px', borderRadius:6, textAlign:'center' }}>
+                ⏸ Market closed — auto-analysis paused. Resumes at 9:15 AM IST.
+              </div>
+            ) : (
+              <>
+                <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'#4B5563', marginBottom:4 }}>
+                  <span>Next analysis in</span>
+                  <span style={{ color:'#F59E0B', ...mono, fontWeight:700 }}>
+                    {Math.floor(cd/60)}:{String(cd%60).padStart(2,'0')}
+                  </span>
+                </div>
+                <div style={{ height:3, background:'#1E2030', borderRadius:2 }}>
+                  <div style={{ height:'100%', borderRadius:2, background:'linear-gradient(to right,#6366F1,#8B5CF6)', width:`${((600-cd)/600)*100}%`, transition:'width 1s linear' }} />
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
