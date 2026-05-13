@@ -135,3 +135,37 @@ Vercel has already started closing the connection, resulting in HTTP 500 with HT
 - **`safeJson()` helper**: replaces all `res.json()` calls — if `res.json()` itself throws
   (because Vercel closed the connection), falls back to `res.send(JSON.stringify(...))`, then silently absorbs
 - **Handler catch**: double-wrapped with `res.end()` fallback
+
+---
+
+## [1.5.4] — 2026-05-13 — Definitive HTTP 500 Fix (Process Crash)
+
+### Root Cause (finally found)
+Two bugs caused the warm Lambda process to crash, making ALL subsequent requests return HTTP 500 HTML:
+
+**Bug 1 — `Promise.race` unhandled rejection:**
+```js
+// BROKEN: when aRes.text() wins, the timeout Promise is left dangling.
+// 8 seconds later it rejects with no handler.
+// Node.js 20 treats unhandled rejections as fatal → process exits → next req = 500 HTML
+await Promise.race([
+  aRes.text(),
+  new Promise((_,rej) => setTimeout(() => rej(new Error('timeout')), 8000))
+]);
+```
+Fixed by removing `Promise.race` entirely. Anthropic's non-streaming API closes the
+connection after the full response, so `aRes.text()` always resolves in milliseconds.
+The existing 40s `AbortController` on the fetch call is sufficient protection.
+
+**Bug 2 — `req.body` destructure outside try-catch:**
+```js
+// BROKEN: if req.body is null/undefined, this throws BEFORE our try-catch
+const { accessToken } = req.body;
+try { ... } catch(fatal) { ... }
+```
+Fixed by moving the entire handler inside a single try-catch with `req.body || {}`.
+
+### Added
+- `/api/health` endpoint: returns `{ok:true, version:'1.5.4', env:{kiteKey:'set|MISSING', anthropicKey:'set|MISSING'}}`
+  Visit `https://nifty-analyst.vercel.app/api/health` to instantly verify deployment and env vars.
+- Prompt build section wrapped in try-catch — if any template expression throws, returns `{error:'Prompt build failed: ...'}` instead of crashing

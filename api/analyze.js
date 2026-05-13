@@ -9,12 +9,16 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { accessToken } = req.body;
-  if (!accessToken) return res.status(400).json({ error: 'accessToken required' });
-
-  // Wrap everything in top-level try-catch — always return JSON
+  // Single try-catch wraps EVERYTHING — no uncaught exception reaches Vercel
   try {
+    const body = req.body || {};
+    const accessToken = body.accessToken;
+    if (!accessToken) return res.status(400).json({ error: 'accessToken required' });
     return await runAnalysis(req, res, accessToken);
+  } catch(fatal) {
+    console.error('Fatal:', fatal.message);
+    try { res.status(500).json({ error: 'Analysis failed: ' + fatal.message }); }
+    catch(e2) { try { res.end(JSON.stringify({ error: fatal.message })); } catch(e3){} }
   } catch(fatal) {
     console.error('Fatal handler error:', fatal.message, fatal.stack?.slice(0,500));
     try { res.status(500).json({ error: 'Analysis failed: ' + fatal.message }); } catch(e2) { res.end(JSON.stringify({ error: fatal.message })); }
@@ -324,6 +328,9 @@ async function runAnalysis(req, res, accessToken) {
   const dataAgeMin = spot?0:999;
 
   // ── Build prompt ──────────────────────────────────────────────────────────
+  // ── Build prompt (fully guarded) ──────────────────────────────────────────
+  let dataBlock, prompt;
+  try {
   const sigma1d=spot&&vix?(spot*(vix/100)/Math.sqrt(252)).toFixed(0):'—';
   const sigma1w=spot&&vix?(spot*(vix/100)/Math.sqrt(52)).toFixed(0):'—';
   const atmAfford=liveF&&atmCeP?Math.floor(liveF/(atmCeP*65))||0:0;
@@ -398,6 +405,10 @@ AUTO-TRADE: [YES - CE/PE / NO]
 
 91% of retail F&O traders lost money FY2024-25 (SEBI). Not SEBI-registered advice.`;
 
+  } catch(promptErr) {
+    console.error('Prompt build error:', promptErr.message);
+    return safeJson(500, {error: 'Prompt build failed: ' + promptErr.message});
+  }
   // ── Anthropic API ─────────────────────────────────────────────────────────
   let analysisText='', inputTokens=0, outputTokens=0;
   try {
@@ -409,11 +420,9 @@ AUTO-TRADE: [YES - CE/PE / NO]
       signal:aCtrl.signal,
     });
     clearTimeout(aTid);
-    // Wrap aRes.json() — large streaming responses can be slow
-    const aText = await Promise.race([
-      aRes.text(),
-      new Promise((_,rej)=>setTimeout(()=>rej(new Error('Anthropic response body timeout')),8000))
-    ]);
+    // Read body — Anthropic non-streaming closes connection after full response,
+    // so aRes.text() resolves in ms. No Promise.race needed (it caused unhandled rejections).
+    const aText = await aRes.text();
     const aData = JSON.parse(aText);
     if(!aRes.ok) throw new Error(aData?.error?.message||`Anthropic HTTP ${aRes.status}`);
     inputTokens  = aData.usage?.input_tokens||0;
