@@ -92,17 +92,31 @@ async function runAnalysis(req, res, accessToken) {
     return {price:cur, prev, chg:(cur-prev).toFixed(2), pct:(((cur-prev)/prev)*100).toFixed(2)};
   };
 
-  // ── NSE fetch (5s timeout, no blocking cookie retry) ─────────────────────
+  // ── NSE fetch with cookie pre-fetch ──────────────────────────────────────
   const nseH = {
     'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
     'Accept':'application/json,text/plain,*/*',
     'Accept-Language':'en-US,en;q=0.9',
     'Referer':'https://www.nseindia.com/',
     'Origin':'https://www.nseindia.com',
+    'Connection':'keep-alive',
   };
+  // Step 1: Get NSE session cookies (3s max) — required for option chain
+  let nseCookie = '';
+  try {
+    const hCtrl=new AbortController(); setTimeout(()=>hCtrl.abort(),3000);
+    const hRes = await fetch('https://www.nseindia.com', {
+      headers:{...nseH, Accept:'text/html,application/xhtml+xml'},
+      signal:hCtrl.signal,
+    });
+    const raw = hRes.headers.get('set-cookie')||'';
+    nseCookie = raw.split(/,(?=[a-zA-Z_])/g).map(c=>c.split(';')[0].trim()).filter(Boolean).join('; ');
+  } catch { /* NSE homepage blocked — option chain will be skipped */ }
   async function nseGet(path) {
     try {
-      const r = await tFetch(`https://www.nseindia.com${path}`, {headers:nseH}, 5000);
+      const headers = {...nseH};
+      if(nseCookie) headers['Cookie'] = nseCookie;
+      const r = await tFetch(`https://www.nseindia.com${path}`, {headers}, 6000);
       if(r.ok) return r.json().catch(()=>null);
       return null;
     } catch { return null; }
@@ -281,7 +295,7 @@ NIFTY 50: ${spot} | Chg: ${chg>=0?'+':''}${chg.toFixed(2)} from ${prevCl}
 Day: O:${dayO.toFixed?dayO.toFixed(1):dayO} H:${dayH.toFixed?dayH.toFixed(1):dayH} L:${dayL.toFixed?dayL.toFixed(1):dayL}
 VWAP: ${vwap.toFixed(2)} | 20-DMA: ${sma20.toFixed(2)} | 9-EMA: ${ema9.toFixed(2)} | 21-EMA: ${ema21.toFixed(2)}
 9-EMA ${ema9>ema21?'ABOVE (bullish)':'BELOW (bearish)'} 21-EMA by ${Math.abs(ema9-ema21).toFixed(2)} pts
-Opening Range: H=${parseFloat(orh).toFixed(1)} L=${parseFloat(orl).toFixed(1)} | Spot ${spot>orh?'ABOVE ORH':'spot<orl?BELOW ORL:INSIDE RANGE'}
+Opening Range: H=${parseFloat(orh).toFixed(1)} L=${parseFloat(orl).toFixed(1)} | Spot ${spot>orh?'ABOVE ORH':spot<orl?'BELOW ORL':'INSIDE RANGE'}
 Day H timing: ${htim} | Day L timing: ${ltim}
 Momentum (last 5 candles): ${mom}
 Institutional candles (spread >80pts): ${instDesc}
@@ -329,13 +343,18 @@ PENDING ORDERS: ${ordText}
 REQUIRED (be concise - max 1500 tokens): ALL 10 factor scores, SCORECARD TOTAL, key levels, DUAL VERDICT boxes. Skip verbose prose.
 MANDATORY STAY OUT if: VIX>22 | spot=0 | expiry day score -5 to +5 | insufficient margin
 
-SCORECARD FORMAT:
-F1 VIX: [+-X] | F2 PCR/OI/Skew: [+-X]
-F3 Intraday: [+-X] | F4 Daily Trend: [+-X]
-F5 Sectoral: [+-X] | F6 FII/DII: [+-X]
-F7 Breadth/Vol/A/D: [+-X] | F8 Global: [+-X]
-F9 IV/Greeks/Sensi: [+-X] | F10 Events: [+-X]
-TOTAL: [+-XX] / 33
+SCORECARD (use EXACTLY this format, one per line):
+F1 VIX: +X
+F2 PCR: +X
+F3 Intraday: +X
+F4 Daily: +X
+F5 Sectoral: +X
+F6 FII: +X
+F7 Breadth: +X
+F8 Global: +X
+F9 IV: +X
+F10 Events: +X
+TOTAL: +XX
 
 VERDICT FORMAT (include both):
 QUICK SETUP (+15-20 premium pts): VERDICT: [ENTRY CE/PE / STAY OUT] | Option: [symbol] | Entry: Rs[X] | SL: Rs[X] | Target: Rs[X]
@@ -381,12 +400,26 @@ AUTO-TRADE: [YES - CE/PE / NO]
   const swingEntryH=swingEntryL?swingEntryL*1.02:null;
   const swingSlM=analysisText.match(/SWING SETUP[\s\S]*?SL:\s*Rs([\d.]+)/i);
   const swingSl=swingSlM?parseFloat(swingSlM[1]):null;
+  // Extract factor score — try multiple patterns
+  const fs2=(labels)=>{
+    for(const label of labels){
+      const re=new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[:\s|*_]*([+-]?\d+)','i');
+      const m=analysisText.match(re);
+      if(m){const v=parseInt(m[1]);if(!isNaN(v))return v;}
+    }
+    return 0;
+  };
   const scores={
-    f1:fi(/F1\s+VIX[^|]*\[?([+-]?\d+)\]?/i), f2:fi(/F2\s+PCR[^|]*\[?([+-]?\d+)\]?/i),
-    f3:fi(/F3\s+Intraday[^|]*\[?([+-]?\d+)\]?/i), f4:fi(/F4\s+Daily[^|]*\[?([+-]?\d+)\]?/i),
-    f5:fi(/F5\s+Sectoral[^|]*\[?([+-]?\d+)\]?/i), f6:fi(/F6\s+FII[^|]*\[?([+-]?\d+)\]?/i),
-    f7:fi(/F7\s+Breadth[^|]*\[?([+-]?\d+)\]?/i), f8:fi(/F8\s+Global[^|]*\[?([+-]?\d+)\]?/i),
-    f9:fi(/F9\s+IV[^|]*\[?([+-]?\d+)\]?/i), f10:fi(/F10\s+Events[^|]*\[?([+-]?\d+)\]?/i),
+    f1:fs2(['F1 VIX','F1: VIX','F1:VIX','VIX Analysis','F1']),
+    f2:fs2(['F2 PCR','F2: PCR','F2:PCR','PCR & OI','PCR/OI','F2']),
+    f3:fs2(['F3 Intraday','F3: Intraday','F3:Intraday','Intraday Action','F3']),
+    f4:fs2(['F4 Daily','F4: Daily','F4:Daily','Daily Trend','F4']),
+    f5:fs2(['F5 Sectoral','F5: Sectoral','F5:Sectoral','Sectoral Health','F5']),
+    f6:fs2(['F6 FII','F6: FII','F6:FII','FII/DII','F6']),
+    f7:fs2(['F7 Breadth','F7: Breadth','F7:Breadth','Market Breadth','F7']),
+    f8:fs2(['F8 Global','F8: Global','F8:Global','Global Cues','F8']),
+    f9:fs2(['F9 IV','F9: IV','F9:IV','IV & Greeks','IV/Greeks','F9']),
+    f10:fs2(['F10 Events','F10: Events','F10:Events','Event Risk','F10']),
   };
   const maxAffordLots=liveF&&atmCeP?Math.floor(liveF/(atmCeP*65))||0:0;
   const lotsStr=`${maxAffordLots} lot(s) at ATM (Rs${atmCeP}/unit x 65 = Rs${(atmCeP*65).toFixed(0)}/lot)`;
