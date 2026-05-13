@@ -217,8 +217,8 @@ async function runAnalysis(req, res, accessToken) {
   const pvDay  = cDay[cDay.length-1];
   const pivot  = pvDay?((pvDay[2]+pvDay[3]+pvDay[4])/3).toFixed(2):0;
   const maxAfford=liveF>0?(liveF/65).toFixed(2):'0';
-  const last20c= c5m.slice(-20).map(c=>`[${c[0].slice(11,16)} O:${c[1].toFixed(1)} H:${c[2].toFixed(1)} L:${c[3].toFixed(1)} C:${c[4].toFixed(1)} V:${c[5]}]`).join('\n');
-  const last15d= cDay.slice(-15).map(c=>`[${c[0].slice(0,10)} O:${c[1].toFixed(1)} H:${c[2].toFixed(1)} L:${c[3].toFixed(1)} C:${c[4].toFixed(1)} V:${c[5]}]`).join('\n');
+  const last20c= c5m.slice(-10).map(c=>`[${c[0].slice(11,16)} O:${c[1].toFixed(1)} H:${c[2].toFixed(1)} L:${c[3].toFixed(1)} C:${c[4].toFixed(1)} V:${c[5]}]`).join('\n');
+  const last15d= cDay.slice(-8).map(c=>`[${c[0].slice(0,10)} O:${c[1].toFixed(1)} H:${c[2].toFixed(1)} L:${c[3].toFixed(1)} C:${c[4].toFixed(1)} V:${c[5]}]`).join('\n');
 
   // ── NSE Option Chain ──────────────────────────────────────────────────────
   let pcr='0',callWall=atm,putWall=atm,maxPain=atm,atmCeP=0,atmPeP=0,nxAtmCeP=0,nxAtmPeP=0,ivpVal=0;
@@ -326,7 +326,7 @@ ${gLine('Crude',G.crude)} | ${gLine('Gold',G.gold)} | ${gLine('USD/INR',G.usdInr
 POSITIONS: ${posText}
 PENDING ORDERS: ${ordText}
 
-REQUIRED: Run ALL 10 factors (F1-F10), SCORECARD with TOTAL, PHASE 7 output block, DUAL VERDICT.
+REQUIRED (be concise - max 1500 tokens): ALL 10 factor scores, SCORECARD TOTAL, key levels, DUAL VERDICT boxes. Skip verbose prose.
 MANDATORY STAY OUT if: VIX>22 | spot=0 | expiry day score -5 to +5 | insufficient margin
 
 SCORECARD FORMAT:
@@ -347,11 +347,13 @@ AUTO-TRADE: [YES - CE/PE / NO]
 
   // ── Anthropic API ─────────────────────────────────────────────────────────
   let analysisText='', inputTokens=0, outputTokens=0;
+  const aCtrl=new AbortController(); const aTid=setTimeout(()=>aCtrl.abort(),50000);
   const aRes = await fetch('https://api.anthropic.com/v1/messages', {
     method:'POST',
     headers:{'x-api-key':process.env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','content-type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:4096,messages:[{role:'user',content:prompt}]})
+    body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1500,messages:[{role:'user',content:prompt}]})
   });
+  clearTimeout(aTid);
   const aData = await aRes.json();
   if(!aRes.ok) throw new Error(aData?.error?.message||`Anthropic HTTP ${aRes.status}`);
   inputTokens  = aData.usage?.input_tokens||0;
