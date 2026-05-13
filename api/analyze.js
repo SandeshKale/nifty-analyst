@@ -122,6 +122,18 @@ async function runAnalysis(req, res, accessToken) {
     } catch { return null; }
   }
 
+  // ── Yahoo Finance options fallback ───────────────────────────────────────
+  async function yfOptions(sym) {
+    try {
+      const r = await tFetch(
+        `https://query1.finance.yahoo.com/v7/finance/options/${encodeURIComponent(sym)}`,
+        {headers:yfH}, 6000
+      );
+      const j = await r.json().catch(()=>null);
+      return j?.optionChain?.result?.[0] || null;
+    } catch { return null; }
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // FETCH ALL DATA IN PARALLEL
   // ══════════════════════════════════════════════════════════════════════════
@@ -132,7 +144,7 @@ async function runAnalysis(req, res, accessToken) {
     yIntra, yDaily,               // Yahoo: Nifty 5m intraday + 60d daily
     yBN, yVix,                    // Yahoo: Bank Nifty, India VIX fallback
     sp500R, dowR, nasR, crudeR, goldR, usdInrR, nikkeiR, hsiR, // Global
-    idxJ, ocJ,                    // NSE: allIndices + option chain
+    idxJ, ocJ, yfOptsR,           // NSE: allIndices + option chain + Yahoo options fallback
   ] = await Promise.allSettled([
     tFetch('https://api.kite.trade/user/margins',{headers:kH},6000).then(r=>r.json()).catch(()=>null),
     tFetch('https://api.kite.trade/portfolio/positions',{headers:kH},6000).then(r=>r.json()).catch(()=>null),
@@ -146,6 +158,7 @@ async function runAnalysis(req, res, accessToken) {
     yfFetch('^N225'), yfFetch('^HSI'),
     nseGet('/api/allIndices'),
     nseGet(`/api/option-chain-indices?symbol=NIFTY`),
+    yfOptions('^NSEI'),
   ]);
 
   const gv = r => r.status==='fulfilled' ? r.value : null;
@@ -240,6 +253,37 @@ async function runAnalysis(req, res, accessToken) {
   let ocTable='Strike | CE_LTP | CE_OI      | OI_CHG   | PE_LTP | PE_OI      | OI_CHG\n';
   ocTable    +='-------|--------|------------|----------|--------|------------|----------\n';
   const ocData=gv(ocJ);
+  const yfOptsData=gv(yfOptsR);
+
+  // Yahoo Finance options fallback — use when NSE option chain not available
+  if(!ocData && yfOptsData && atm>0) {
+    try {
+      const calls=yfOptsData.options?.[0]?.calls||[];
+      const puts=yfOptsData.options?.[0]?.puts||[];
+      // Get ATM call and put
+      const atmCall=calls.reduce((b,c)=>Math.abs((c.strike||0)-atm)<Math.abs((b.strike||0)-atm)?c:b,calls[0]||{});
+      const atmPut=puts.reduce((b,p)=>Math.abs((p.strike||0)-atm)<Math.abs((b.strike||0)-atm)?p:b,puts[0]||{});
+      if(atmCall.lastPrice) atmCeP=atmCall.lastPrice;
+      if(atmPut.lastPrice)  atmPeP=atmPut.lastPrice;
+      if(atmCall.impliedVolatility) ivpVal=Math.round(atmCall.impliedVolatility*100);
+      // Basic PCR from OI
+      const totCalls=calls.reduce((s,c)=>s+(c.openInterest||0),0);
+      const totPuts=puts.reduce((s,p)=>s+(p.openInterest||0),0);
+      if(totCalls>0) pcr=(totPuts/totCalls).toFixed(3);
+      // Call/put walls
+      const maxCallOI=calls.reduce((b,c)=>(c.openInterest||0)>(b.openInterest||0)?c:b,{});
+      const maxPutOI=puts.reduce((b,p)=>(p.openInterest||0)>(b.openInterest||0)?p:b,{});
+      if(maxCallOI.strike) callWall=maxCallOI.strike;
+      if(maxPutOI.strike)  putWall=maxPutOI.strike;
+      ocTable='[Yahoo Finance options — limited data]
+';
+      ocTable+=`ATM ${atm} CE: Rs${atmCeP.toFixed(1)} | PE: Rs${atmPeP.toFixed(1)} | PCR: ${pcr}
+`;
+      ocTable+=`Call Wall: ${callWall} | Put Wall: ${putWall}
+`;
+    } catch(e) { console.error('Yahoo options parse error:',e.message); }
+  }
+
   if(ocData?.records?.data && atm>0){
     const tExp=expiry.nseStr, nxExp=expiryNx.nseStr;
     const ocRows=ocData.records.data.filter(r=>r.expiryDate===tExp);
@@ -343,18 +387,11 @@ PENDING ORDERS: ${ordText}
 REQUIRED (be concise - max 1500 tokens): ALL 10 factor scores, SCORECARD TOTAL, key levels, DUAL VERDICT boxes. Skip verbose prose.
 MANDATORY STAY OUT if: VIX>22 | spot=0 | expiry day score -5 to +5 | insufficient margin
 
-SCORECARD (use EXACTLY this format, one per line):
-F1 VIX: +X
-F2 PCR: +X
-F3 Intraday: +X
-F4 Daily: +X
-F5 Sectoral: +X
-F6 FII: +X
-F7 Breadth: +X
-F8 Global: +X
-F9 IV: +X
-F10 Events: +X
-TOTAL: +XX
+SCORECARD — output EXACTLY this block (integers only, no spaces around colon):
+SCORES:{"f1":0,"f2":0,"f3":0,"f4":0,"f5":0,"f6":0,"f7":0,"f8":0,"f9":0,"f10":0,"total":0}
+
+Then show human-readable breakdown: F1 VIX (+X): reason | F2 PCR (+X): reason ... etc
+TOTAL: +XX / ±30
 
 VERDICT FORMAT (include both):
 QUICK SETUP (+15-20 premium pts): VERDICT: [ENTRY CE/PE / STAY OUT] | Option: [symbol] | Entry: Rs[X] | SL: Rs[X] | Target: Rs[X]
@@ -400,27 +437,26 @@ AUTO-TRADE: [YES - CE/PE / NO]
   const swingEntryH=swingEntryL?swingEntryL*1.02:null;
   const swingSlM=analysisText.match(/SWING SETUP[\s\S]*?SL:\s*Rs([\d.]+)/i);
   const swingSl=swingSlM?parseFloat(swingSlM[1]):null;
-  // Extract factor score — try multiple patterns
-  const fs2=(labels)=>{
-    for(const label of labels){
-      const re=new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[:\s|*_]*([+-]?\d+)','i');
-      const m=analysisText.match(re);
-      if(m){const v=parseInt(m[1]);if(!isNaN(v))return v;}
-    }
-    return 0;
-  };
-  const scores={
-    f1:fs2(['F1 VIX','F1: VIX','F1:VIX','VIX Analysis','F1']),
-    f2:fs2(['F2 PCR','F2: PCR','F2:PCR','PCR & OI','PCR/OI','F2']),
-    f3:fs2(['F3 Intraday','F3: Intraday','F3:Intraday','Intraday Action','F3']),
-    f4:fs2(['F4 Daily','F4: Daily','F4:Daily','Daily Trend','F4']),
-    f5:fs2(['F5 Sectoral','F5: Sectoral','F5:Sectoral','Sectoral Health','F5']),
-    f6:fs2(['F6 FII','F6: FII','F6:FII','FII/DII','F6']),
-    f7:fs2(['F7 Breadth','F7: Breadth','F7:Breadth','Market Breadth','F7']),
-    f8:fs2(['F8 Global','F8: Global','F8:Global','Global Cues','F8']),
-    f9:fs2(['F9 IV','F9: IV','F9:IV','IV & Greeks','IV/Greeks','F9']),
-    f10:fs2(['F10 Events','F10: Events','F10:Events','Event Risk','F10']),
-  };
+  // Parse machine-readable SCORES JSON block
+  let scores={f1:0,f2:0,f3:0,f4:0,f5:0,f6:0,f7:0,f8:0,f9:0,f10:0};
+  try {
+    const sm=analysisText.match(/SCORES:\s*(\{[^}]+\})/);
+    if(sm) Object.assign(scores, JSON.parse(sm[1]));
+  } catch(e) {
+    // fallback: scan for Fx label: ±N patterns
+    const fp=(label,aliases)=>{
+      for(const l of [label,...(aliases||[])]){
+        const m=analysisText.match(new RegExp(l+'[^\d-+]*([+-]?\d+)','i'));
+        if(m) return parseInt(m[1]);
+      }
+      return 0;
+    };
+    scores={
+      f1:fp('F1',['VIX Analysis']),f2:fp('F2',['PCR']),f3:fp('F3',['Intraday']),
+      f4:fp('F4',['Daily Trend']),f5:fp('F5',['Sectoral']),f6:fp('F6',['FII']),
+      f7:fp('F7',['Breadth']),f8:fp('F8',['Global']),f9:fp('F9',['IV']),f10:fp('F10',['Events']),
+    };
+  }
   const maxAffordLots=liveF&&atmCeP?Math.floor(liveF/(atmCeP*65))||0:0;
   const lotsStr=`${maxAffordLots} lot(s) at ATM (Rs${atmCeP}/unit x 65 = Rs${(atmCeP*65).toFixed(0)}/lot)`;
 
