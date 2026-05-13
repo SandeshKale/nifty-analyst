@@ -178,9 +178,11 @@ export default async function handler(req, res) {
   try {
     const yfFetch = async (sym) => {
       try {
+        const ctrl = new AbortController();
+        const tid  = setTimeout(() => ctrl.abort(), 5000);
         const r = await fetch(
           `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=2d`,
-          { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120' } }
+          { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120' }, signal: ctrl.signal }
         );
         const j = await r.json();
         const m = j?.chart?.result?.[0]?.meta;
@@ -377,7 +379,7 @@ PHASE 9 — NEXT 30 MIN WATCH: [what] | LEAN→ENTRY trigger: [exact level]
       method:'POST',
       headers:{'x-api-key':process.env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','content-type':'application/json'},
       body: JSON.stringify({
-        model:'claude-sonnet-4-6',
+        model:'claude-sonnet-4-20250514',
         max_tokens:4096,
         // NO tools — all data pre-fetched above. Saves ~70% token cost.
         messages:[{role:'user',content:prompt}]

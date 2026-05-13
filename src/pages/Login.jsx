@@ -11,9 +11,9 @@ export default function Login() {
   useEffect(() => {
     if (localStorage.getItem('kite_access_token')) navigate('/')
     const tick = () => {
-      const sgt = new Date(Date.now()+8*3600000)
-      const ist = new Date(Date.now()+5.5*3600000)
-      setClock(sgt.toISOString().slice(11,19)+' SGT')
+      const ist = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
+      const sgtStr = new Date().toLocaleTimeString('en-SG', { timeZone: 'Asia/Singapore', hour:'2-digit', minute:'2-digit', second:'2-digit' })
+      setClock(sgtStr + ' SGT')
       const day  = ist.getDay()
       const mins = ist.getHours()*60+ist.getMinutes()
       if (day===0||day===6) { setMktStatus('🔴 Weekend — Market Closed'); return }

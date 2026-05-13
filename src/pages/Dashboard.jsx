@@ -39,15 +39,18 @@ const fR  = n => `₹${Number(n||0).toFixed(2)}`
 const fT  = d => d?d.toLocaleTimeString('en-IN',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—'
 const fTs = s => s?new Date(s).toLocaleTimeString('en-IN',{hour12:false,hour:'2-digit',minute:'2-digit'}):'—'
 
+function getIST() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+}
 function isMarketOpen() {
-  const ist = new Date(Date.now()+5.5*3600000)
+  const ist = getIST()
   const day = ist.getDay()
   if (day===0||day===6) return false
   const mins = ist.getHours()*60+ist.getMinutes()
   return mins>=9*60+15 && mins<15*60+30
 }
 function isAutoTradeAllowed() {
-  const ist = new Date(Date.now()+5.5*3600000)
+  const ist = getIST()
   return ist.getHours()*60+ist.getMinutes() <= 13*60+45
 }
 
