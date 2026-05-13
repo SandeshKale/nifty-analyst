@@ -85,3 +85,12 @@ Kite free plan returns HTTP 403 "Insufficient permission" for quote/historical e
 - Emergency stop
 - API cost tracker
 - Trade log
+
+---
+
+## [1.5.1] — 2026-05-13 — Token Expiry & HTML 504 Handling
+
+### Fixed
+- **Auto-analysis spamming bad token**: When Kite token expires mid-session, auto-analysis kept retrying every 5 minutes. Now auto-analysis AND auto-trade toggle off immediately on any auth error.
+- **res.json() crash on Vercel 504/502**: When Vercel returns an HTML error page (timeout or gateway error), `res.json()` throws uncaught exception. Now reads raw text first, parses with try-catch, shows human-readable message ("Analysis timed out", "Gateway error. Try again in 30s.") and stops auto-analysis.
+- **Token expiry pre-check**: Same auto-stop applied to the localStorage token expiry check at start of `analyse()`.

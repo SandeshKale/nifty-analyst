@@ -403,6 +403,7 @@ export default function Dashboard() {
     const expiry = localStorage.getItem('kite_token_expiry')
     if (expiry && new Date() > new Date(expiry)) {
       setErr('Kite session expired — please logout and login again to get a fresh token.')
+      setAutoOn(false); setAtOn(false)  // stop auto-retrying with expired token
       return
     }
 
@@ -418,7 +419,17 @@ export default function Dashboard() {
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({accessToken})
       })
-      const data = await res.json()
+      // Guard: Vercel returns HTML on 504/502 — res.json() would throw
+      const rawText = await res.text()
+      let data
+      try { data = JSON.parse(rawText) }
+      catch {
+        const hint = res.status===504||res.status===524 ? 'Analysis timed out (>60s). Try again or reduce data load.'
+                   : res.status===502 ? 'Vercel gateway error. Try again in 30s.'
+                   : `Server returned non-JSON (HTTP ${res.status}).`
+        setAutoOn(false); setAtOn(false)
+        throw new Error(hint)
+      }
       if (!res.ok) {
         const detail = JSON.stringify(data, null, 2)
         setErrDetail(`HTTP ${res.status}\n${detail}`)
@@ -427,6 +438,8 @@ export default function Dashboard() {
       // Detect Kite auth errors in successful HTTP responses
       if (data.error?.includes?.('pattern')||data.error?.includes?.('Invalid token')||data.error?.includes?.('expired')) {
         setErrDetail(JSON.stringify(data, null, 2))
+        setAutoOn(false)   // stop hammering with bad token
+        setAtOn(false)
         throw new Error('Kite session expired — please re-login')
       }
 
