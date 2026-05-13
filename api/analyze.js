@@ -379,7 +379,7 @@ PHASE 9 — NEXT 30 MIN WATCH: [what] | LEAN→ENTRY trigger: [exact level]
       method:'POST',
       headers:{'x-api-key':process.env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','content-type':'application/json'},
       body: JSON.stringify({
-        model:'claude-sonnet-4-20250514',
+        model:'claude-sonnet-4-6',
         max_tokens:4096,
         // NO tools — all data pre-fetched above. Saves ~70% token cost.
         messages:[{role:'user',content:prompt}]
