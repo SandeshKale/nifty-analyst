@@ -386,7 +386,17 @@ export default function Dashboard() {
               {md.isPreMarket&&<span style={{color:'#6366F1'}}> · Pre-market (prev session data)</span>}
               {md.isPostMarket&&<span style={{color:'#374151'}}> · Post-market</span>}
               {md.isFresh===false&&!md.isPreMarket&&!md.isPostMarket&&<span style={{color:'#F59E0B'}}> · ⚠️ Stale ({md.dataAgeMin}min)</span>}
-              {(()=>{const exp=localStorage.getItem('kite_token_expiry');return exp?<span style={{color:'#374151'}}> · Token expires {new Date(exp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:false})} IST</span>:null})()}
+              {(()=>{
+                const exp=localStorage.getItem('kite_token_expiry');
+                if(!exp) return null;
+                const istDate=new Date(new Date(exp).getTime()+5.5*3600000);
+                const hh=String(istDate.getUTCHours()).padStart(2,'0');
+                const mm=String(istDate.getUTCMinutes()).padStart(2,'0');
+                const isExpired=new Date()>new Date(exp);
+                return <span style={{color:isExpired?'#EF4444':'#374151'}}>
+                  {isExpired?' · ⚠️ Token EXPIRED — re-login':` · Token expires ${hh}:${mm} IST`}
+                </span>;
+              })()}
             </div>
           </div>
           <div style={{display:'flex',alignItems:'center',gap:10}}>
