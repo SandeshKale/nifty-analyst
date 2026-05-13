@@ -17,11 +17,18 @@ export default async function handler(req, res) {
     return await runAnalysis(req, res, accessToken);
   } catch(fatal) {
     console.error('Fatal handler error:', fatal.message, fatal.stack?.slice(0,500));
-    return res.status(500).json({ error: 'Analysis failed: ' + fatal.message });
+    try { res.status(500).json({ error: 'Analysis failed: ' + fatal.message }); } catch(e2) { res.end(JSON.stringify({ error: fatal.message })); }
   }
 }
 
 async function runAnalysis(req, res, accessToken) {
+  // Safety: ensure we always write a response, even if res.json() fails
+  const safeJson = (statusCode, payload) => {
+    try { res.status(statusCode).json(payload); } catch(e2) {
+      try { res.status(statusCode).send(JSON.stringify(payload)); } catch(e3) { /* response gone */ }
+    }
+  };
+
   const apiKey = process.env.KITE_API_KEY;
   const kH = { 'Authorization': `token ${apiKey}:${accessToken}`, 'X-Kite-Version': '3' };
 
@@ -88,8 +95,12 @@ async function runAnalysis(req, res, accessToken) {
   }
   const toG = r => {
     if(!r?.meta) return null;
-    const m=r.meta, prev=m.previousClose||m.chartPreviousClose||m.regularMarketPrice, cur=m.regularMarketPrice;
-    return {price:cur, prev, chg:(cur-prev).toFixed(2), pct:(((cur-prev)/prev)*100).toFixed(2)};
+    const m=r.meta;
+    const cur=m.regularMarketPrice;
+    const prev=m.previousClose||m.chartPreviousClose||cur||0;
+    if(!cur||!prev||isNaN(cur)||isNaN(prev)) return null;  // guard undefined/NaN
+    const chg=cur-prev, pct=((chg/prev)*100);
+    return {price:cur, prev, chg:isNaN(chg)?'0':chg.toFixed(2), pct:isNaN(pct)?'0':pct.toFixed(2)};
   };
 
   // ── NSE fetch (no cookie — relies on Yahoo fallback if blocked) ─────────────
@@ -228,8 +239,8 @@ async function runAnalysis(req, res, accessToken) {
   const highs10= cDay.slice(-10).map(c=>c[2]), lows10=cDay.slice(-10).map(c=>c[3]);
   const r1     = highs10.length?Math.max(...highs10):0, s1=lows10.length?Math.min(...lows10):0;
   const pvDay  = cDay[cDay.length-1];
-  const pivot  = pvDay?((pvDay[2]+pvDay[3]+pvDay[4])/3).toFixed(2):0;
-  const maxAfford=liveF>0?(liveF/65).toFixed(2):'0';
+  const pivot  = pvDay?((pvDay[2]+pvDay[3]+pvDay[4])/3).toFixed(2):'0';
+  const maxAfford=liveF>0?((liveF/65)||0).toFixed(2):'0';
   const last20c= c5m.slice(-6).map(c=>`[${c[0].slice(11,16)} O:${c[1].toFixed(0)} H:${c[2].toFixed(0)} L:${c[3].toFixed(0)} C:${c[4].toFixed(0)}]`).join(' ');
   const last15d= cDay.slice(-5).map(c=>`[${c[0].slice(5,10)} O:${c[1].toFixed(0)} H:${c[2].toFixed(0)} L:${c[3].toFixed(0)} C:${c[4].toFixed(0)}]`).join(' ');
 
@@ -255,7 +266,7 @@ async function runAnalysis(req, res, accessToken) {
       // Basic PCR from OI
       const totCalls=calls.reduce((s,c)=>s+(c.openInterest||0),0);
       const totPuts=puts.reduce((s,p)=>s+(p.openInterest||0),0);
-      if(totCalls>0) pcr=(totPuts/totCalls).toFixed(3);
+      if(totCalls>0) pcr=isNaN(totPuts/totCalls)?'0':(totPuts/totCalls).toFixed(3);
       // Call/put walls
       const maxCallOI=calls.reduce((b,c)=>(c.openInterest||0)>(b.openInterest||0)?c:b,{});
       const maxPutOI=puts.reduce((b,p)=>(p.openInterest||0)>(b.openInterest||0)?p:b,{});
@@ -286,7 +297,7 @@ async function runAnalysis(req, res, accessToken) {
       ocTable+=`${String(st).padStart(6)} | ${String((ce.lastPrice||0).toFixed(0)).padStart(6)} | ${String(ce.openInterest||0).padStart(10)} | ${fc(ce.changeinOpenInterest||0)} | ${String((pe.lastPrice||0).toFixed(0)).padStart(6)} | ${String(pe.openInterest||0).padStart(10)} | ${fc(pe.changeinOpenInterest||0)}\n`;
     }
     const tc=ocData.filtered?.CE?.totOI||totCeOI, tp=ocData.filtered?.PE?.totOI||totPeOI;
-    pcr=tc>0?(tp/tc).toFixed(3):'0';
+    pcr=tc>0&&!isNaN(tp/tc)?(tp/tc).toFixed(3):'0';
     let minLoss=Infinity;
     for(const target of strikes){
       let loss=0;
@@ -321,10 +332,10 @@ async function runAnalysis(req, res, accessToken) {
   const dataBlock = !isFresh
     ? '⚠️ DATA FEED FAILURE — Nifty spot = 0. MANDATORY STAY OUT on all setups.'
     : `═══ MARKET DATA (${nseSrc}) ═══
-NIFTY 50: ${spot} | Chg: ${chg>=0?'+':''}${chg.toFixed(2)} from ${prevCl}
+NIFTY 50: ${spot} | Chg: ${chg>=0?'+':''}${isNaN(chg)?0:chg.toFixed(2)} from ${prevCl}
 Day: O:${dayO.toFixed?dayO.toFixed(1):dayO} H:${dayH.toFixed?dayH.toFixed(1):dayH} L:${dayL.toFixed?dayL.toFixed(1):dayL}
-VWAP: ${vwap.toFixed(2)} | 20-DMA: ${sma20.toFixed(2)} | 9-EMA: ${ema9.toFixed(2)} | 21-EMA: ${ema21.toFixed(2)}
-9-EMA ${ema9>ema21?'ABOVE (bullish)':'BELOW (bearish)'} 21-EMA by ${Math.abs(ema9-ema21).toFixed(2)} pts
+VWAP: ${(vwap||0).toFixed(2)} | 20-DMA: ${(sma20||0).toFixed(2)} | 9-EMA: ${(ema9||0).toFixed(2)} | 21-EMA: ${(ema21||0).toFixed(2)}
+9-EMA ${ema9>ema21?'ABOVE (bullish)':'BELOW (bearish)'} 21-EMA by ${(Math.abs((ema9||0)-(ema21||0))).toFixed(2)} pts
 Opening Range: H=${parseFloat(orh).toFixed(1)} L=${parseFloat(orl).toFixed(1)} | Spot ${spot>orh?'ABOVE ORH':spot<orl?'BELOW ORL':'INSIDE RANGE'}
 Day H timing: ${htim} | Day L timing: ${ltim}
 Momentum (last 5 candles): ${mom}
@@ -357,7 +368,7 @@ All market data pre-fetched below. No web searches needed.
 TIME: ${istStr} / ${sgtStr} | ${dayName} ${todayDate}
 SESSION: ${isPreMarket?'PRE-MARKET':isPostMarket?'POST-MARKET':'LIVE MARKET (intraday)'}
 
-CONSTANTS: Lot size=65 | Expiry=TUESDAY | LIVE_FUNDS=Rs${liveF.toFixed(0)}
+CONSTANTS: Lot size=65 | Expiry=TUESDAY | LIVE_FUNDS=Rs${(liveF||0).toFixed(0)}
 Max affordable premium: Rs${maxAfford}/unit | Max lots at ATM: ${atmAfford} | Auto-trade: +-8 | SL: 50% premium
 
 ${dataBlock}
@@ -411,7 +422,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
     if(!analysisText) throw new Error('Empty Anthropic response');
   } catch(ae) {
     const msg = ae.name==='AbortError'?'Analysis timed out (40s). Market too busy — try again.':ae.message;
-    return res.status(500).json({error:`model: ${msg}`, kiteErr:null, kiteHttpStatus:0});
+    return safeJson(500, {error:`model: ${msg}`, kiteErr:null, kiteHttpStatus:0});
   }
 
   // ── Parse response ────────────────────────────────────────────────────────
@@ -457,7 +468,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
   const maxAffordLots=liveF&&atmCeP?Math.floor(liveF/(atmCeP*65))||0:0;
   const lotsStr=`${maxAffordLots} lot(s) at ATM (Rs${atmCeP}/unit x 65 = Rs${(atmCeP*65).toFixed(0)}/lot)`;
 
-  return res.json({
+  return safeJson(200, {
     score,verdict,autoTrade,
     quickSymbol,quickEntryL,quickEntryH,quickSl,
     swingSymbol,swingEntryL,swingEntryH,swingSl,
@@ -467,7 +478,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
     marketData:{
       spot,vix,bn,liveF,atm,
       expiry:expiry.dateStr,dte:expiry.dte,isExpiry:expiry.isExpiry,
-      vwap:vwap.toFixed(2),sma20:sma20.toFixed(2),ema9:ema9.toFixed(2),ema21:ema21.toFixed(2),
+      vwap:(vwap||0).toFixed(2),sma20:(sma20||0).toFixed(2),ema9:(ema9||0).toFixed(2),ema21:(ema21||0).toFixed(2),
       pcr,callWall,putWall,atmCeP,atmPeP,orh,orl,
       r2:r2.toFixed?r2.toFixed(0):r2,r1:r1.toFixed?r1.toFixed(0):r1,
       pivot,s1:s1.toFixed?s1.toFixed(0):s1,s2:s2.toFixed?s2.toFixed(0):s2,

@@ -114,3 +114,24 @@ Function now returns JSON on all failure modes:
 - `{error: "Analysis timed out"}` on 40s abort
 - `{error: "Anthropic response body timeout"}` if body stream hangs
 - `{error: "Anthropic HTTP 4xx"}` on API errors
+
+---
+
+## [1.5.3] — 2026-05-13 — Fix HTTP 500 Root Cause (Definitive)
+
+### Root Cause Found
+`toG()` (Yahoo Finance data parser) returned `{price:undefined, chg:undefined.toFixed(2)}` when
+`regularMarketPrice` was absent from the Yahoo API response (happens during off-hours or rate limits).
+`undefined.toFixed(2)` throws `TypeError` at module level, which escapes our try-catch because
+Vercel has already started closing the connection, resulting in HTTP 500 with HTML body.
+
+### Fixed
+- **`toG()` crash**: Added guard `if(!cur||!prev||isNaN(cur)||isNaN(prev)) return null`
+- **`chg.toFixed(2)`** in prompt: added `isNaN(chg)` guard
+- **`vwap/sma/ema.toFixed()`** in prompt and response: `||0` fallback on all
+- **`pcr.toFixed(3)`**: added `isNaN` guards on both occurrences
+- **`pivot.toFixed(2)`**: guarded
+- **`maxAfford.toFixed(2)`**: guarded
+- **`safeJson()` helper**: replaces all `res.json()` calls — if `res.json()` itself throws
+  (because Vercel closed the connection), falls back to `res.send(JSON.stringify(...))`, then silently absorbs
+- **Handler catch**: double-wrapped with `res.end()` fallback
