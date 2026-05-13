@@ -18,8 +18,8 @@ export default async function handler(req, res) {
 
   const now = new Date();
   const ist = new Date(now.getTime() + 5.5 * 3600000);
-  const istStr  = ist.toISOString().replace('T',' ').slice(0,19) + ' IST';
-  const sgtStr  = new Date(now.getTime() + 8*3600000).toISOString().replace('T',' ').slice(0,19) + ' SGT';
+  const istStr  = ist.toISOString().slice(0,19) + '+05:30'; // ISO 8601 with IST offset — Safari-safe
+  const sgtStr  = new Date(now.getTime() + 8*3600000).toISOString().slice(0,19) + '+08:00';
   const todayDate = ist.toISOString().slice(0,10);
   const dayName   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][ist.getDay()];
 
@@ -73,8 +73,14 @@ export default async function handler(req, res) {
       fetch(`https://api.kite.trade/instruments/historical/256265/5minute?from=${enc(hist5mFrom)}&to=${enc(hist5mTo)}`,{headers:kH}),
       fetch(`https://api.kite.trade/instruments/historical/256265/day?from=${from30d}&to=${todayDate}`,{headers:kH}),
     ]);
-    const pj=async r=>r.status==='fulfilled'?r.value.json().catch(()=>null):null;
+    const pj=async r=>{
+      if(r.status!=='fulfilled') return null;
+      try{ const j=await r.value.json(); return j; }catch{return null;}
+    };
     const [qJ,ltpJ,margJ,posJ,ordJ,h5J,hdJ]=await Promise.all([qR,ltpR,margR,posR,ordR,h5R,hdR].map(pj));
+    // Capture Kite errors for diagnostics
+    const kiteErr = qJ?.status==='error'?qJ.message:(ltpJ?.status==='error'?ltpJ.message:null);
+    const kiteHttpStatus = qR.status==='fulfilled'?qR.value.status:0;
 
     const nQ=qJ?.data?.['NSE:NIFTY 50'];
     const spot=nQ?.last_price||0, prevCl=nQ?.ohlc?.close||spot;
@@ -157,7 +163,7 @@ export default async function handler(req, res) {
     const lastTT=qJ?.data?.['NSE:NIFTY 50']?.last_trade_time;
     const dataAgeMin=lastTT?Math.round((ist-new Date(lastTT))/60000):999;
 
-    K={spot,chg:spot-prevCl,prevCl,dayH,dayL,dayO,volume:nQ?.volume||0,
+    K={spot,chg:spot-prevCl,prevCl,dayH,dayL,dayO,volume:nQ?.volume||0,kiteErr,kiteHttpStatus,
       vix:ltpJ?.data?.['NSE:INDIA VIX']?.last_price,
       bn:ltpJ?.data?.['NSE:NIFTY BANK']?.last_price,
       niftyIT:ltpJ?.data?.['NSE:NIFTY IT']?.last_price,
@@ -453,6 +459,6 @@ PHASE 9 — NEXT 30 MIN WATCH: [what] | LEAN→ENTRY trigger: [exact level]
       openPositions:K.openPos,
     },
     usage:{inputTokens,outputTokens},
-    timestamp:istStr,sgt:sgtStr,
+    timestamp:istStr,sgt:sgtStr,kiteErr:K.kiteErr||null,kiteHttpStatus:K.kiteHttpStatus||0,
   });
 }

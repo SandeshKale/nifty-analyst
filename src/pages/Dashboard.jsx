@@ -37,7 +37,7 @@ const isAutoTrigger  = s => s >= AUTO_TRADE_CE || s <= AUTO_TRADE_PE
 const fI  = n => n!=null?Number(n).toLocaleString('en-IN'):'—'
 const fR  = n => `₹${Number(n||0).toFixed(2)}`
 const fT  = d => d?d.toLocaleTimeString('en-IN',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—'
-const fTs = s => s?new Date(s).toLocaleTimeString('en-IN',{hour12:false,hour:'2-digit',minute:'2-digit'}):'—'
+const fTs = s => { if(!s) return '—'; const d=new Date(s); return isNaN(d)?s.slice(11,16)||'—':d.toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour12:false,hour:'2-digit',minute:'2-digit'}); }
 
 function getIST() {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
@@ -544,6 +544,12 @@ export default function Dashboard() {
       )}
 
       {/* ERROR */}
+      {result?.kiteErr&&(
+            <div style={{background:'rgba(251,191,36,0.1)',border:'1px solid rgba(251,191,36,0.3)',borderRadius:8,padding:'10px 14px',marginBottom:12}}>
+              <div style={{color:'#FBB724',fontWeight:700,fontSize:12}}>⚠️ Kite API error (HTTP {result.kiteHttpStatus}): {result.kiteErr}</div>
+              <div style={{color:'#9CA3AF',fontSize:11,marginTop:4}}>Quote data unavailable. Check Kite Connect subscription or tap Logout → re-login.</div>
+            </div>
+          )}
       {err&&(
         <div style={{...card,background:'rgba(239,68,68,0.07)',border:'1px solid rgba(239,68,68,0.25)'}}>
           <div style={{fontSize:13,color:'#F87171',fontWeight:700,marginBottom:6}}>⚠ {err}</div>
