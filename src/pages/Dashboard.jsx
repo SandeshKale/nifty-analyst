@@ -138,6 +138,9 @@ export default function Dashboard() {
   const [result,      setResult]      = useState(null)
   const [busy,        setBusy]        = useState(false)
   const [err,         setErr]         = useState(null)
+  const [clock,       setClock]       = useState('')
+  const [elapsed,     setElapsed]     = useState(0)
+  const [errDetail,   setErrDetail]   = useState(null)
   const [autoOn,      setAutoOn]      = useState(false)
   const [atOn,        setAtOn]        = useState(false)
   const [stopped,     setStopped]     = useState(false)
@@ -151,15 +154,29 @@ export default function Dashboard() {
   const [showFull,    setShowFull]    = useState(false)
   const [orderMsg,    setOrderMsg]    = useState(null)
   const [dailyTrades, setDailyTrades] = useState(0)
-  const [tradeMode,   setTradeMode]   = useState('quick') // 'quick' | 'swing'
-  const [pendingSignal, setPendingSignal] = useState(null) // for manual execute prompt
+  const [tradeMode,   setTradeMode]   = useState('quick')
+  const [pendingSignal, setPendingSignal] = useState(null)
+  const [autoIntervalMin, setAutoIntervalMin] = useState(10)
 
-  const atRef  = useRef(atOn)
-  const posRef = useRef(position)
-  const intRef = useRef(null)
-  const cdRef  = useRef(null)
+  const atRef    = useRef(atOn)
+  const posRef   = useRef(position)
+  const intRef   = useRef(null)
+  const cdRef    = useRef(null)
+  const clockRef = useRef(null)
+  const elRef    = useRef(null)
   useEffect(()=>{atRef.current=atOn},[atOn])
   useEffect(()=>{posRef.current=position},[position])
+
+  // Live SGT clock
+  useEffect(()=>{
+    const tick = () => {
+      const sgt = new Date(Date.now() + 8*3600000)
+      setClock(sgt.toISOString().slice(11,19))
+    }
+    tick()
+    clockRef.current = setInterval(tick, 1000)
+    return () => clearInterval(clockRef.current)
+  }, [])
 
   const accessToken = localStorage.getItem('kite_access_token')
   const userName    = localStorage.getItem('kite_user_name')||'Trader'
@@ -267,8 +284,20 @@ export default function Dashboard() {
   // ── Core analysis (manual + auto) ─────────────────────────────────────────
   const analyse = useCallback(async () => {
     if (busy||stopped) return
-    setBusy(true); setErr(null); setPendingSignal(null)
+
+    // Check token expiry before calling API
+    const expiry = localStorage.getItem('kite_token_expiry')
+    if (expiry && new Date() > new Date(expiry)) {
+      setErr('Kite session expired — please logout and login again to get a fresh token.')
+      return
+    }
+
+    setBusy(true); setErr(null); setErrDetail(null); setPendingSignal(null)
     setPulse(true); setTimeout(()=>setPulse(false),700)
+    // Fix 2: Start elapsed timer
+    setElapsed(0)
+    const elStart = Date.now()
+    elRef.current = setInterval(()=>setElapsed(Math.floor((Date.now()-elStart)/1000)), 1000)
 
     try {
       const res  = await fetch('/api/analyze',{
@@ -276,7 +305,16 @@ export default function Dashboard() {
         body:JSON.stringify({accessToken})
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error||`API error (${res.status})`)
+      if (!res.ok) {
+        const detail = JSON.stringify(data, null, 2)
+        setErrDetail(`HTTP ${res.status}\n${detail}`)
+        throw new Error(data.error||`API error (${res.status})`)
+      }
+      // Detect Kite auth errors in successful HTTP responses
+      if (data.error?.includes?.('pattern')||data.error?.includes?.('Invalid token')||data.error?.includes?.('expired')) {
+        setErrDetail(JSON.stringify(data, null, 2))
+        throw new Error('Kite session expired — please re-login')
+      }
 
       setResult(data)
       setInTok(p=>p+(data.usage?.inputTokens||0))
@@ -294,22 +332,25 @@ export default function Dashboard() {
       }
     } catch(e) {
       setErr(e.message)
+      setErrDetail(e.stack || e.message)
     } finally {
+      clearInterval(elRef.current)
       setBusy(false)
     }
   },[busy,stopped,accessToken,handleAutoTrade])
 
   // ── Auto-analysis loop (gated to market hours) ─────────────────────────────
   useEffect(()=>{
+    const ms = autoIntervalMin * 60 * 1000
     if (autoOn&&!stopped) {
-      if (isMarketOpen()) { analyse(); setCd(AUTO_INTERVAL_MS/1000) } else setCd(0)
-      cdRef.current  = setInterval(()=>{ if(isMarketOpen()) setCd(p=>p>1?p-1:AUTO_INTERVAL_MS/1000) },1000)
-      intRef.current = setInterval(()=>{ if(isMarketOpen()) { analyse(); setCd(AUTO_INTERVAL_MS/1000) } },AUTO_INTERVAL_MS)
+      if (isMarketOpen()) { analyse(); setCd(autoIntervalMin*60) } else setCd(0)
+      cdRef.current  = setInterval(()=>{ if(isMarketOpen()) setCd(p=>p>1?p-1:autoIntervalMin*60) },1000)
+      intRef.current = setInterval(()=>{ if(isMarketOpen()) { analyse(); setCd(autoIntervalMin*60) } },ms)
     } else {
       clearInterval(intRef.current); clearInterval(cdRef.current)
     }
     return ()=>{ clearInterval(intRef.current); clearInterval(cdRef.current) }
-  },[autoOn,stopped]) // eslint-disable-line
+  },[autoOn,stopped,autoIntervalMin]) // eslint-disable-line
 
   const stop   = ()=>{ setStopped(true);setAutoOn(false);setAtOn(false);clearInterval(intRef.current);clearInterval(cdRef.current) }
   const resume = ()=>setStopped(false)
@@ -335,10 +376,17 @@ export default function Dashboard() {
       <div style={{background:'linear-gradient(135deg,#0D0D1C,#070710)',borderBottom:'1px solid rgba(255,255,255,0.06)',padding:'12px 16px'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div>
-            <div style={{fontSize:13,color:'#6366F1',fontWeight:800,letterSpacing:'0.14em'}}>NIFTY OPTIONS ANALYST</div>
+            <div style={{display:'flex',alignItems:'baseline',gap:10}}>
+              <div style={{fontSize:13,color:'#6366F1',fontWeight:800,letterSpacing:'0.14em'}}>NIFTY OPTIONS ANALYST</div>
+              <div style={{fontSize:16,color:'#E8E8F8',fontFamily:'monospace',fontWeight:700,letterSpacing:'0.06em'}}>{clock}</div>
+              <div style={{fontSize:10,color:'#374151'}}>SGT</div>
+            </div>
             <div style={{fontSize:11,color:'#374151',marginTop:1}}>
               {mktOpen?'🟢 Market Open':'🔴 Market Closed'} · {userName}
-              {md.isFresh===false&&<span style={{color:'#F59E0B'}}> · ⚠️ Stale data ({md.dataAgeMin}min)</span>}
+              {md.isPreMarket&&<span style={{color:'#6366F1'}}> · Pre-market (prev session data)</span>}
+              {md.isPostMarket&&<span style={{color:'#374151'}}> · Post-market</span>}
+              {md.isFresh===false&&!md.isPreMarket&&!md.isPostMarket&&<span style={{color:'#F59E0B'}}> · ⚠️ Stale ({md.dataAgeMin}min)</span>}
+              {(()=>{const exp=localStorage.getItem('kite_token_expiry');return exp?<span style={{color:'#374151'}}> · Token expires {new Date(exp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:false})} IST</span>:null})()}
             </div>
           </div>
           <div style={{display:'flex',alignItems:'center',gap:10}}>
@@ -365,6 +413,19 @@ export default function Dashboard() {
         <StatCard label="VIX" value={md.vix?.toFixed(2)??'——'} color={md.vix>20?'#EF4444':md.vix>15?'#F59E0B':'#10B981'}/>
         <StatCard label="FUNDS" value={md.liveF?`₹${(md.liveF/1000).toFixed(0)}K`:'——'} color="#F59E0B"/>
       </div>
+      {result?.globalData&&<div style={{...card,display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6}}>
+        {[
+          {l:'S&P500',v:result.globalData.sp500?`${result.globalData.sp500.pct>=0?'+':''}${result.globalData.sp500.pct}%`:'—',c:parseFloat(result.globalData.sp500?.pct)>=0?'#10B981':'#EF4444'},
+          {l:'CRUDE',v:result.globalData.crude?`$${parseFloat(result.globalData.crude.price).toFixed(1)}`:'—',c:parseFloat(result.globalData.crude?.price)>90?'#EF4444':'#10B981'},
+          {l:'GOLD',v:result.globalData.gold?`$${Math.round(result.globalData.gold.price)}`:'—',c:'#F59E0B'},
+          {l:'USD/INR',v:result.globalData.usdInr?`₹${parseFloat(result.globalData.usdInr.price).toFixed(2)}`:'—',c:'#9CA3AF'},
+        ].map(({l,v,c})=>(
+          <div key={l} style={{background:'#111120',borderRadius:7,padding:'7px 8px'}}>
+            <div style={{fontSize:9,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.09em',fontWeight:700}}>{l}</div>
+            <div style={{fontSize:13,fontWeight:700,...mono,color:c,marginTop:3}}>{v}</div>
+          </div>
+        ))}
+      </div>}
       <div style={{...card,display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8}}>
         <StatCard label="PCR" value={md.pcr??'—'} color={parseFloat(md.pcr)<0.8?'#EF4444':'#10B981'} small/>
         <StatCard label="ATM" value={md.atm?fI(md.atm):'—'} small/>
@@ -472,10 +533,27 @@ export default function Dashboard() {
       {/* ERROR */}
       {err&&(
         <div style={{...card,background:'rgba(239,68,68,0.07)',border:'1px solid rgba(239,68,68,0.25)'}}>
-          <div style={{fontSize:13,color:'#F87171',fontWeight:600}}>⚠ {err}</div>
-          {err.includes('401')&&<div style={{fontSize:11,color:'#6B7280',marginTop:6}}>
-            Session expired. <span onClick={logout} style={{color:'#6366F1',cursor:'pointer'}}>Re-login →</span>
-          </div>}
+          <div style={{fontSize:13,color:'#F87171',fontWeight:700,marginBottom:6}}>⚠ {err}</div>
+          {(err.includes('401')||err.includes('expired')||err.includes('pattern')||err.includes('session')||err.includes('token'))&&(
+            <div style={{marginBottom:10}}>
+              <div style={{fontSize:11,color:'#6B7280',marginBottom:8}}>Kite session expired. Tokens reset daily at midnight IST.</div>
+              <button onClick={logout} style={{padding:'8px 16px',borderRadius:7,border:'none',background:'#6366F1',color:'#fff',fontWeight:700,fontSize:12,cursor:'pointer'}}>🔗 Re-login with Kite</button>
+            </div>
+          )}
+          {errDetail&&(
+            <div style={{marginTop:8,background:'#0A0A14',borderRadius:6,padding:10,border:'1px solid rgba(239,68,68,0.15)'}}>
+              <div style={{fontSize:9,color:'#4B5563',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:6,fontWeight:700}}>
+                Full Error Detail (send to Claude for debugging):
+              </div>
+              <pre style={{fontSize:10,color:'#F87171',whiteSpace:'pre-wrap',wordBreak:'break-all',margin:0,maxHeight:200,overflowY:'auto',fontFamily:'monospace',lineHeight:1.5}}>
+                {errDetail}
+              </pre>
+              <button onClick={()=>navigator.clipboard?.writeText(errDetail).catch(()=>{})}
+                style={{marginTop:8,padding:'5px 10px',borderRadius:5,border:'1px solid rgba(239,68,68,0.3)',background:'transparent',color:'#F87171',fontSize:10,cursor:'pointer'}}>
+                📋 Copy error
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -496,7 +574,9 @@ export default function Dashboard() {
             background:busy||stopped?'#141424':'#6366F1',
             color:busy||stopped?'#374151':'#fff',transition:'all 0.2s',
             boxShadow:busy||stopped?'none':'0 0 20px rgba(99,102,241,0.4)'}}>
-          {busy?'⟳  ANALYSING — Kite + web search + AI…':stopped?'🛑 STOPPED':'⚡  ANALYSE NOW (Kite + AI)'}
+          {busy
+            ? `⟳  ANALYSING… ${Math.floor(elapsed/60)>0?Math.floor(elapsed/60)+'m ':''}${elapsed%60}s elapsed`
+            : stopped?'🛑 STOPPED':'⚡  ANALYSE NOW (Kite + AI)'}
         </button>
       </div>
 
@@ -505,9 +585,22 @@ export default function Dashboard() {
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div>
             <div style={{fontWeight:700,fontSize:14}}>Auto Analysis</div>
-            <div style={{fontSize:11,color:'#4B5563'}}>Every 10 minutes · Market hours only (9:15–3:30 IST)</div>
+            <div style={{fontSize:11,color:'#4B5563'}}>Market hours only (9:15–3:30 IST)</div>
           </div>
           <Toggle on={autoOn&&!stopped} set={v=>setAutoOn(v)} disabled={stopped}/>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginTop:10}}>
+          <span style={{fontSize:11,color:'#4B5563',flexShrink:0}}>Interval:</span>
+          {[5,10,15,20,30].map(m=>(
+            <button key={m} onClick={()=>!stopped&&setAutoIntervalMin(m)}
+              disabled={stopped}
+              style={{padding:'4px 10px',borderRadius:6,border:`1px solid ${autoIntervalMin===m?'#6366F1':'rgba(255,255,255,0.08)'}`,
+                background:autoIntervalMin===m?'rgba(99,102,241,0.2)':'transparent',
+                color:autoIntervalMin===m?'#A5B4FC':'#4B5563',fontSize:11,fontWeight:700,
+                cursor:stopped?'not-allowed':'pointer'}}>
+              {m}m
+            </button>
+          ))}
         </div>
         {autoOn&&!stopped&&(
           <div style={{marginTop:10}}>
@@ -519,7 +612,9 @@ export default function Dashboard() {
               <>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'#4B5563',marginBottom:4}}>
                   <span>Next analysis in</span>
-                  <span style={{color:'#F59E0B',...mono,fontWeight:700}}>{Math.floor(cd/60)}:{String(cd%60).padStart(2,'0')}</span>
+                  <span style={{color:'#F59E0B',...mono,fontWeight:700}}>
+                    {cd>0?`${Math.floor(cd/60)}:${String(cd%60).padStart(2,'0')}`:'—'}
+                  </span>
                 </div>
                 <div style={{height:3,background:'#1E2030',borderRadius:2}}>
                   <div style={{height:'100%',borderRadius:2,background:'linear-gradient(to right,#6366F1,#8B5CF6)',width:`${((600-cd)/600)*100}%`,transition:'width 1s linear'}}/>
