@@ -158,8 +158,22 @@ export default function Dashboard() {
   const [orderMsg,    setOrderMsg]    = useState(null)
   const [dailyTrades, setDailyTrades] = useState(0)
   const [tradeMode,   setTradeMode]   = useState('quick')
-  const [pendingSignal, setPendingSignal] = useState(null)
+  const [pendingSignal,   setPendingSignal]   = useState(null)
   const [autoIntervalMin, setAutoIntervalMin] = useState(10)
+  // Rule 1 & 9: Capital tracking
+  const [startCapital,    setStartCapital]    = useState(null)
+  // Rule 5: OI flip-flop
+  const [oiHistory,       setOiHistory]       = useState([])
+  const [oiFlipWarn,      setOiFlipWarn]      = useState(false)
+  // Rule 6: Anti-FOMO cooldown
+  const [lastExit,        setLastExit]        = useState(null)  // {dir,time}
+  // Rule 7: Premium delta (IV crush)
+  const [entrySnapshot,   setEntrySnapshot]   = useState(null)  // {spot,premium}
+  // Rule 8: Afternoon fade
+  const [afFade,          setAfFade]          = useState(false)
+  // Rule 9: Capital preservation mode
+  const [cpMode,          setCpMode]          = useState(false)
+  const [cpHard,          setCpHard]          = useState(false)
 
   const atRef    = useRef(atOn)
   const posRef   = useRef(position)
@@ -188,13 +202,74 @@ export default function Dashboard() {
 
   const logout = () => { localStorage.clear(); navigate('/login') }
 
+  // ── Rule helpers ──────────────────────────────────────────────────────────
+
+  // Rule 1 & 9: Check capital limits
+  const checkCapital = (liveF, startCap) => {
+    if (!startCap || !liveF) return { blocked: false }
+    const loss = startCap - liveF
+    const drawPct = loss / startCap
+    if (drawPct >= 0.30) return { blocked: true, hard: true, reason: `🛑 Capital Preservation HARD STOP: ${(drawPct*100).toFixed(1)}% drawdown (>30%) — exiting all` }
+    if (drawPct >= 0.20) return { blocked: true, hard: false, reason: `⛔ Capital Preservation: ${(drawPct*100).toFixed(1)}% drawdown (>20%) — entries blocked` }
+    if (loss >= 1000)    return { blocked: true, hard: false, reason: `⛔ Daily loss limit: ₹${loss.toFixed(0)} ≥ ₹1,000 — entries blocked` }
+    if (drawPct >= 0.12) return { blocked: true, hard: false, reason: `⛔ Daily loss limit: ${(drawPct*100).toFixed(1)}% ≥ 12% — entries blocked` }
+    return { blocked: false }
+  }
+
+  // Rule 3: σ-based strike validation
+  const validateStrike = (sym, spot, vix) => {
+    if (!sym || !spot || !vix) return { ok: true }
+    const sigma1d = spot * (vix / 100) / Math.sqrt(252)
+    if (sigma1d <= 0) return { ok: true }
+    const m = sym.match(/([0-9]{4,5})(CE|PE)$/)
+    if (!m) return { ok: true }
+    const strike = parseInt(m[1])
+    const sigmas = Math.abs(strike - spot) / sigma1d
+    if (sigmas > 1.5) return { ok: false, sigmas, reason: `Strike ${strike} is ${sigmas.toFixed(1)}σ OTM — blocked (>1.5σ). Use ≤0.5σ strike.` }
+    return { ok: true, sigmas }
+  }
+
+  // Rule 6: Anti-FOMO cooldown (30 min)
+  const checkFomoCooldown = (dir) => {
+    if (!lastExit || lastExit.dir !== dir) return { blocked: false }
+    const elapsed = Date.now() - lastExit.time
+    const COOLDOWN = 30 * 60 * 1000
+    if (elapsed < COOLDOWN) {
+      const minsLeft = Math.ceil((COOLDOWN - elapsed) / 60000)
+      return { blocked: true, reason: `🕐 Anti-FOMO: ${minsLeft}min cooldown after ${dir} exit` }
+    }
+    return { blocked: false }
+  }
+
+  // Rule 10: Conviction-based lot sizing
+  const convictionLots = (verdict, score, maxLots) => {
+    const v = (verdict || '').toUpperCase()
+    if (v.includes('STRONG') || Math.abs(score) >= 12) return { lots: maxLots, tag: 'STRONG 100%' }
+    if (v.includes('ENTRY')  || Math.abs(score) >= 8)  return { lots: Math.max(1, Math.floor(maxLots * 0.75)), tag: 'ENTRY 75%' }
+    return { lots: 0, tag: 'STAY OUT 0%' }
+  }
+
   // ── Execute a single trade ─────────────────────────────────────────────────
   const executeTrade = useCallback(async (r, mode='quick') => {
     if (!isAutoTradeAllowed()) { setOrderMsg('⏰ Blocked — after 1:45 PM IST'); return false }
     if (dailyTrades>=2)        { setOrderMsg('📊 Daily limit: 2 trades reached'); return false }
 
     const md   = r.marketData || {}
+
+    // Rule 1 & 9: Capital preservation / daily loss limit
+    const capCheck = checkCapital(md.liveF, startCapital)
+    if (capCheck.blocked) { setOrderMsg(capCheck.reason); return false }
+
+    // Rule 6: Anti-FOMO cooldown
+    const tradeDir = r.score >= 0 ? 'CE' : 'PE'
+    const fomoCheck = checkFomoCooldown(tradeDir)
+    if (fomoCheck.blocked) { setOrderMsg(fomoCheck.reason); return false }
+
+    // Rule 3: σ-based strike validation
     const sym  = mode==='swing' ? (r.swingSymbol||r.quickSymbol) : (r.quickSymbol||r.swingSymbol)
+    const strikeCheck = validateStrike(sym, md.spot, md.vix)
+    if (!strikeCheck.ok) { setOrderMsg(`⚠️ ${strikeCheck.reason}`); return false }
+
     const entH = mode==='swing' ? (r.swingEntryH||r.quickEntryH) : (r.quickEntryH||r.swingEntryH)
 
     if (!sym)  { setOrderMsg('⚠️ No symbol in analysis — cannot trade'); return false }
@@ -207,13 +282,15 @@ export default function Dashboard() {
       return false
     }
 
-    // Fix 6: IVP-based lot sizing
-    const ivp   = r.ivpVal || 50
+    // Rule 10: Conviction-based sizing (overlaid with IVP safety cap)
+    const ivp    = r.ivpVal || 50
     const afford = md.liveF ? Math.floor(md.liveF / cost) : 1
-    const lots  = ivp>70 ? Math.max(1,Math.floor(afford*0.5))
-                : ivp>20 ? Math.max(1,Math.floor(afford*0.75))
-                : afford
-    const qty   = Math.max(LOT_SIZE, lots*LOT_SIZE)
+    const ivpCap = ivp > 70 ? Math.max(1, Math.floor(afford * 0.5))
+                 : ivp > 20 ? Math.max(1, Math.floor(afford * 0.75))
+                 : afford
+    const { lots: convLots, tag: convTag } = convictionLots(r.verdict, r.score, ivpCap)
+    const lots   = Math.max(1, convLots)
+    const qty    = Math.max(LOT_SIZE, lots * LOT_SIZE)
 
     try {
       const res  = await fetch('/api/place-order',{
@@ -228,7 +305,9 @@ export default function Dashboard() {
       const t = {type:r.score>=0?'CE':'PE',sym,entry:entH,sl:slPremium,
                  orderId:data.orderId,time:new Date(),score:r.score,mode,qty}
       setPosition(t)
-      setTradeLog(l=>[{...t,action:`${mode.toUpperCase()} BUY ${t.type} ✅`},...l.slice(0,29)])
+      // Rule 7: Save entry snapshot for IV crush detection
+      setEntrySnapshot({ spot: md.spot || 0, premium: entH, time: Date.now() })
+      setTradeLog(l=>[{...t,action:`${mode.toUpperCase()} BUY ${t.type} ✅ [${convTag}]`},...l.slice(0,29)])
       setDailyTrades(p=>p+1)
 
       // GTT stop-loss (50% of premium)
@@ -265,8 +344,38 @@ export default function Dashboard() {
       await executeTrade(r, tradeMode)
     }
 
-    // Exit: score flipped direction
+    // Exit: check all exit rules
     if (cur) {
+      // Rule 8: Afternoon Fade — tighten SL after 12:30 IST + 150pt rally
+      const istNow = new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}))
+      const istMins = istNow.getHours()*60 + istNow.getMinutes()
+      if (istMins >= 12*60+30 && r.marketData) {
+        const rally = (r.marketData.dayH||0) - (r.marketData.dayO||0)
+        if (rally >= 150 && score < 0) setAfFade(true)
+        else setAfFade(false)
+      }
+
+      // Rule 7: IV Crush — spot moved but premium didn't
+      if (entrySnapshot && r.marketData?.spot && r.marketData?.atmCeP) {
+        const spotMove = Math.abs((r.marketData.spot - entrySnapshot.spot) / (entrySnapshot.spot||1))
+        const premMove = Math.abs(((cur.type==='CE'?r.marketData.atmCeP:r.marketData.atmPeP) - entrySnapshot.premium) / (entrySnapshot.premium||1))
+        if (spotMove > 0.005 && premMove < 0.01) {
+          setOrderMsg('📉 IV Crush detected — premium not moving with spot. Exiting.')
+          // Force exit below
+          const ivCrushExit = true
+          try {
+            const res = await fetch('/api/place-order',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({accessToken,tradingsymbol:cur.sym,transactionType:'SELL',quantity:cur.qty||LOT_SIZE})})
+            const data = await res.json()
+            setTradeLog(l=>[{...cur,action:data.orderId?`IV CRUSH EXIT ✅ OID:${data.orderId}`:`IV CRUSH EXIT FAILED`,exitTime:new Date()},...l.slice(0,29)])
+            setLastExit({dir:cur.type, time:Date.now()})
+            setPosition(null); setEntrySnapshot(null)
+            return
+          } catch(e) { setOrderMsg(`⚠️ IV Crush exit error: ${e.message}`) }
+        }
+      }
+
+      // Rule 4: Score Reversal Exit — CE exit if score ≤ 0, PE exit if score ≥ 0
       const flip = (cur.type==='CE'&&score<=0)||(cur.type==='PE'&&score>=0)
       if (flip) {
         try {
@@ -277,6 +386,8 @@ export default function Dashboard() {
           })
           const data = await res.json()
           setTradeLog(l=>[{...cur,action:data.orderId?`AUTO EXIT ✅ OID:${data.orderId}`:`EXIT FAILED: ${data.error}`,exitTime:new Date()},...l.slice(0,29)])
+          setLastExit({dir:cur.type, time:Date.now()})  // Rule 6: start FOMO cooldown
+          setEntrySnapshot(null)
           setPosition(null)
           setOrderMsg(data.orderId?`✅ Auto-exited ${cur.type} ${cur.sym}`:`⚠️ Exit failed: ${data.error}`)
         } catch(e) { setOrderMsg(`⚠️ Exit error: ${e.message}`) }
@@ -320,6 +431,44 @@ export default function Dashboard() {
       }
 
       setResult(data)
+      // Rule 1: Set starting capital on first analysis
+      if (!startCapital && data.marketData?.liveF > 0) setStartCapital(data.marketData.liveF)
+
+      // Rule 5: OI Flip-Flop Detector
+      if (data.marketData) {
+        const oc = { callWall: data.marketData.callWall, putWall: data.marketData.putWall, pcr: data.marketData.pcr }
+        setOiHistory(prev => {
+          const hist = [...prev, oc].slice(-10)
+          if (hist.length >= 3) {
+            let cwFlips = 0, pwFlips = 0
+            for (let i = 1; i < hist.length; i++) {
+              if (hist[i].callWall !== hist[i-1].callWall && hist[i-1].callWall) cwFlips++
+              if (hist[i].putWall  !== hist[i-1].putWall  && hist[i-1].putWall)  pwFlips++
+            }
+            setOiFlipWarn(cwFlips >= 2 || pwFlips >= 2)
+          }
+          return hist
+        })
+      }
+
+      // Rule 9: Capital preservation mode check
+      if (data.marketData?.liveF && startCapital) {
+        const cap = checkCapital(data.marketData.liveF, startCapital)
+        setCpMode(cap.blocked)
+        setCpHard(cap.hard || false)
+        // Hard stop: force exit if >30% drawdown
+        if (cap.hard && posRef.current) {
+          setOrderMsg(cap.reason)
+          try {
+            const cur = posRef.current
+            const res = await fetch('/api/place-order',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({accessToken,tradingsymbol:cur.sym,transactionType:'SELL',quantity:cur.qty||LOT_SIZE})})
+            const data2 = await res.json()
+            if(data2.orderId) { setPosition(null); setEntrySnapshot(null) }
+          } catch(e) {}
+        }
+      }
+
       setInTok(p=>p+(data.usage?.inputTokens||0))
       setOutTok(p=>p+(data.usage?.outputTokens||0))
       setCalls(p=>p+1)
@@ -544,6 +693,42 @@ export default function Dashboard() {
       )}
 
       {/* ERROR */}
+      {/* Rule 5: OI Flip-Flop Warning */}
+      {oiFlipWarn&&(
+        <div style={{...card,background:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.3)'}}>
+          <div style={{color:'#F59E0B',fontWeight:700,fontSize:12}}>⚠️ OI FLIP-FLOP DETECTED</div>
+          <div style={{color:'#9CA3AF',fontSize:11,marginTop:4}}>Call/Put walls shifted 2+ times — PCR/OI signal (F2) unreliable. Treat F2 as neutral.</div>
+        </div>
+      )}
+
+      {/* Rule 8: Afternoon Fade Warning */}
+      {afFade&&position&&(
+        <div style={{...card,background:'rgba(239,68,68,0.08)',border:'1px solid rgba(239,68,68,0.3)'}}>
+          <div style={{color:'#EF4444',fontWeight:700,fontSize:12}}>🌇 AFTERNOON FADE ACTIVE</div>
+          <div style={{color:'#9CA3AF',fontSize:11,marginTop:4}}>After 12:30 IST + 150pt rally + bearish turn — SL tightened to 30% premium.</div>
+        </div>
+      )}
+
+      {/* Rule 6: Anti-FOMO Cooldown */}
+      {lastExit&&(()=>{const elapsed=Date.now()-lastExit.time;const left=Math.ceil((30*60*1000-elapsed)/60000);return left>0&&(
+        <div style={{...card,background:'rgba(99,102,241,0.06)',border:'1px solid rgba(99,102,241,0.2)'}}>
+          <div style={{color:'#A5B4FC',fontWeight:700,fontSize:12}}>🕐 ANTI-FOMO COOLDOWN: {left}min</div>
+          <div style={{color:'#9CA3AF',fontSize:11,marginTop:4}}>No re-entry in {lastExit.dir} direction for {left} more minute{left!==1?'s':''}.</div>
+        </div>
+      )})()}
+
+      {/* Rule 9: Capital Preservation */}
+      {cpMode&&(
+        <div style={{...card,background:cpHard?'rgba(239,68,68,0.12)':'rgba(245,158,11,0.08)',border:`1px solid ${cpHard?'rgba(239,68,68,0.4)':'rgba(245,158,11,0.3)'}`}}>
+          <div style={{color:cpHard?'#EF4444':'#F59E0B',fontWeight:800,fontSize:13}}>
+            {cpHard?'🛑 HARD STOP — CAPITAL PRESERVATION':'⛔ CAPITAL PRESERVATION MODE'}
+          </div>
+          <div style={{color:'#9CA3AF',fontSize:11,marginTop:4}}>
+            {cpHard?'Drawdown >30% — all entries blocked + positions exited.':'Drawdown >20% — new entries blocked. Manage existing positions only.'}
+          </div>
+        </div>
+      )}
+
       {result?.kiteErr&&(
             <div style={{background:'rgba(251,191,36,0.1)',border:'1px solid rgba(251,191,36,0.3)',borderRadius:8,padding:'10px 14px',marginBottom:12}}>
               <div style={{color:'#FBB724',fontWeight:700,fontSize:12}}>⚠️ Kite API error (HTTP {result.kiteHttpStatus}): {result.kiteErr}</div>
@@ -707,6 +892,26 @@ export default function Dashboard() {
           <StatCard label="CE Trigger" value={`+${AUTO_TRADE_CE}`} color="#10B981" small/>
           <StatCard label="PE Trigger" value={String(AUTO_TRADE_PE)} color="#EF4444" small/>
         </div>
+        {startCapital&&md.liveF&&(
+          <div style={{marginTop:8,padding:'8px 10px',borderRadius:8,background:'#0A0A18',fontSize:11}}>
+            <div style={{display:'flex',justifyContent:'space-between',color:'#6B7280'}}>
+              <span>Starting capital</span><span style={{color:'#E8E8F8',fontFamily:'monospace'}}>₹{startCapital.toFixed(0)}</span>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',color:'#6B7280',marginTop:2}}>
+              <span>P&L today</span>
+              <span style={{color:(md.liveF-startCapital)>=0?'#10B981':'#EF4444',fontFamily:'monospace'}}>
+                {(md.liveF-startCapital)>=0?'+':''}₹{(md.liveF-startCapital).toFixed(0)}
+                {' '}({(((md.liveF-startCapital)/startCapital)*100).toFixed(1)}%)
+              </span>
+            </div>
+            <div style={{marginTop:4,height:3,background:'#1E2030',borderRadius:2}}>
+              <div style={{height:'100%',borderRadius:2,
+                background:(md.liveF-startCapital)>=0?'#10B981':'#EF4444',
+                width:`${Math.min(100,Math.abs(((md.liveF-startCapital)/startCapital)*100/12)*100)}%`}}/>
+            </div>
+            <div style={{fontSize:10,color:'#374151',marginTop:2}}>Daily loss limit: ₹1,000 or 12% of capital</div>
+          </div>
+        )}
 
         {atOn&&!stopped&&result&&!position&&isAutoTrigger(score)&&result.autoTrade?.toUpperCase().includes('YES')&&(
           <div style={{marginTop:12,padding:12,borderRadius:8,background:'rgba(99,102,241,0.14)',border:'1px solid #6366F180'}}>
@@ -728,7 +933,7 @@ export default function Dashboard() {
             <div style={{fontSize:11,color:'#374151',marginTop:2}}>
               Loss if SL hits: ₹{((position.entry-position.sl)*LOT_SIZE).toFixed(0)} total
             </div>
-            <button onClick={()=>{setTradeLog(l=>[{...position,action:'EXIT (Manual) 🔄',exitTime:new Date()},...l.slice(0,29)]);setPosition(null)}}
+            <button onClick={()=>{setTradeLog(l=>[{...position,action:'EXIT (Manual) 🔄',exitTime:new Date()},...l.slice(0,29)]);setLastExit({dir:position.type,time:Date.now()});setEntrySnapshot(null);setPosition(null)}}
               style={{marginTop:8,padding:'6px 12px',borderRadius:6,border:'1px solid rgba(255,255,255,0.1)',background:'transparent',color:'#9CA3AF',fontSize:12,cursor:'pointer'}}>
               Log Manual Exit
             </button>
