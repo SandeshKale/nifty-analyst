@@ -14,6 +14,21 @@ export default async function handler(req, res) {
     const body = req.body || {};
     const accessToken = body.accessToken;
     if (!accessToken) return res.status(400).json({ error: 'accessToken required' });
+
+    // Gate: only run during NSE market hours (9:15–15:30 IST, Mon–Fri)
+    const now = new Date();
+    const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    const day = ist.getDay(), h = ist.getHours(), m = ist.getMinutes();
+    const mins = h*60+m;
+    const isWeekend = day===0||day===6;
+    const inSession = !isWeekend && mins>=9*60+15 && mins<15*60+30;
+    if (!inSession) {
+      const reason = isWeekend ? 'Weekend — market closed'
+        : mins < 9*60+15 ? `Pre-market — opens at 9:15 AM IST (${9*60+15-mins} min)`
+        : 'Post-market — market closed at 3:30 PM IST';
+      return res.status(403).json({ error: `Analysis blocked: ${reason}. Run only during 9:15–15:30 IST Mon–Fri.` });
+    }
+
     return await runAnalysis(req, res, accessToken);
   } catch(fatal) {
     console.error('Fatal:', fatal.message);

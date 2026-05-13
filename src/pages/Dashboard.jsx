@@ -413,6 +413,22 @@ export default function Dashboard() {
       return
     }
 
+    // Block analysis outside market hours
+    if (!isMarketOpen()) {
+      const ist = getIST()
+      const day = ist.getDay()
+      const mins = ist.getHours()*60+ist.getMinutes()
+      const isWeekend = day===0||day===6
+      const isPreMkt  = !isWeekend && mins < 9*60+15
+      const minsToOpen = 9*60+15 - mins
+      const reason = isWeekend
+        ? '🔴 Market closed — weekend. Analysis runs Mon–Fri 9:15–15:30 IST.'
+        : isPreMkt
+        ? `⏰ Market opens in ${Math.floor(minsToOpen/60)}h ${minsToOpen%60}m (9:15 AM IST). Analysis blocked until then.`
+        : '🔴 Market closed (after 3:30 PM IST). Analysis blocked until next session.'
+      setErr(reason)
+      return
+    }
     setBusy(true); setErr(null); setErrDetail(null); setPendingSignal(null)
     setPulse(true); setTimeout(()=>setPulse(false),700)
     // Fix 2: Start elapsed timer
@@ -810,16 +826,18 @@ export default function Dashboard() {
 
       {/* ANALYSE BUTTON */}
       <div style={{padding:'8px 12px'}}>
-        <button onClick={()=>!stopped&&!busy&&analyse()} disabled={busy||stopped}
+        <button onClick={()=>!stopped&&!busy&&analyse()} disabled={busy||stopped||!isMarketOpen()}
           style={{width:'100%',padding:16,borderRadius:10,border:'none',
             fontWeight:700,fontSize:16,letterSpacing:'0.05em',
-            cursor:busy||stopped?'not-allowed':'pointer',
-            background:busy||stopped?'#141424':'#6366F1',
-            color:busy||stopped?'#374151':'#fff',transition:'all 0.2s',
-            boxShadow:busy||stopped?'none':'0 0 20px rgba(99,102,241,0.4)'}}>
+            cursor:busy||stopped||!isMarketOpen()?'not-allowed':'pointer',
+            background:busy||stopped?'#141424':!isMarketOpen()?'#141424':'#6366F1',
+            color:busy||stopped||!isMarketOpen()?'#374151':'#fff',transition:'all 0.2s',
+            boxShadow:busy||stopped||!isMarketOpen()?'none':'0 0 20px rgba(99,102,241,0.4)'}}>
           {busy
             ? `⟳  ANALYSING… ${Math.floor(elapsed/60)>0?Math.floor(elapsed/60)+'m ':''}${elapsed%60}s elapsed`
-            : stopped?'🛑 STOPPED':'⚡  ANALYSE NOW (Kite + AI)'}
+            : stopped?'🛑 STOPPED'
+            : !isMarketOpen()?'🔴 MARKET CLOSED — Analysis blocked'
+            :'⚡  ANALYSE NOW (Kite + AI)'}
         </button>
       </div>
 

@@ -169,3 +169,27 @@ Fixed by moving the entire handler inside a single try-catch with `req.body || {
 - `/api/health` endpoint: returns `{ok:true, version:'1.5.4', env:{kiteKey:'set|MISSING', anthropicKey:'set|MISSING'}}`
   Visit `https://nifty-analyst.vercel.app/api/health` to instantly verify deployment and env vars.
 - Prompt build section wrapped in try-catch — if any template expression throws, returns `{error:'Prompt build failed: ...'}` instead of crashing
+
+---
+
+## [1.5.5] — 2026-05-13 — Block Analysis Outside Market Hours
+
+### Changed
+**Frontend (Dashboard):**
+- Analyse Now button is disabled and grayed out outside 9:15–15:30 IST Mon–Fri
+- Button label changes to `🔴 MARKET CLOSED — Analysis blocked`
+- If somehow triggered (e.g. clock drift), `analyse()` returns early with a clear reason:
+  - Weekend: `🔴 Market closed — weekend. Analysis runs Mon–Fri 9:15–15:30 IST.`
+  - Pre-market: `⏰ Market opens in Xh Ym (9:15 AM IST). Analysis blocked until then.`
+  - Post-market: `🔴 Market closed (after 3:30 PM IST). Analysis blocked until next session.`
+
+**Backend (analyze.js):**
+- Hard gate at the top of the handler — returns `HTTP 403` immediately if outside market hours
+- Zero Anthropic API calls, zero Yahoo/NSE fetches — no timeout risk, no cost
+- Error message includes time remaining until next open
+
+### Why this fixes the recurring HTTP 500
+All 500 errors occurred during off-hours testing/debugging. Yahoo Finance returns
+incomplete data (missing `regularMarketPrice`) outside market hours for NSE indices,
+which caused `toG()` to crash. NSE APIs also behave differently post-close.
+By hard-blocking outside market hours, none of these edge cases can surface.
