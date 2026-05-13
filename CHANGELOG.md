@@ -94,3 +94,23 @@ Kite free plan returns HTTP 403 "Insufficient permission" for quote/historical e
 - **Auto-analysis spamming bad token**: When Kite token expires mid-session, auto-analysis kept retrying every 5 minutes. Now auto-analysis AND auto-trade toggle off immediately on any auth error.
 - **res.json() crash on Vercel 504/502**: When Vercel returns an HTML error page (timeout or gateway error), `res.json()` throws uncaught exception. Now reads raw text first, parses with try-catch, shows human-readable message ("Analysis timed out", "Gateway error. Try again in 30s.") and stops auto-analysis.
 - **Token expiry pre-check**: Same auto-stop applied to the localStorage token expiry check at start of `analyse()`.
+
+---
+
+## [1.5.2] — 2026-05-13 — Fix HTTP 500 / Timing Overrun
+
+### Fixed
+- **HTTP 500 non-JSON response**: Root cause was Vercel killing the function near the 60s wall before our try-catch could respond. Fixed by:
+  1. Removing 3s sequential NSE cookie pre-fetch (was blocking data phase start)
+  2. Wrapping entire Anthropic call in its own try-catch that returns valid JSON even on abort
+  3. Adding 8s `Promise.race` timeout on `aRes.text()` (streaming body read can hang)
+  4. Adding `signal: aCtrl.signal` to Anthropic fetch so AbortController actually works
+- **Anthropic timeout**: 50s → 40s (leaves 20s buffer in 60s Vercel wall)
+- **Prompt trimmed**: Intraday candles 10→6, daily candles 8→5, rounded to integers. Saves ~200 input tokens → ~3s faster generation.
+- **Timing budget**: worst case ~57s (was ~62s) — safely within 60s
+
+### Result
+Function now returns JSON on all failure modes:
+- `{error: "Analysis timed out"}` on 40s abort
+- `{error: "Anthropic response body timeout"}` if body stream hangs
+- `{error: "Anthropic HTTP 4xx"}` on API errors

@@ -92,31 +92,17 @@ async function runAnalysis(req, res, accessToken) {
     return {price:cur, prev, chg:(cur-prev).toFixed(2), pct:(((cur-prev)/prev)*100).toFixed(2)};
   };
 
-  // ── NSE fetch with cookie pre-fetch ──────────────────────────────────────
+  // ── NSE fetch (no cookie — relies on Yahoo fallback if blocked) ─────────────
   const nseH = {
     'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
     'Accept':'application/json,text/plain,*/*',
     'Accept-Language':'en-US,en;q=0.9',
     'Referer':'https://www.nseindia.com/',
     'Origin':'https://www.nseindia.com',
-    'Connection':'keep-alive',
   };
-  // Step 1: Get NSE session cookies (3s max) — required for option chain
-  let nseCookie = '';
-  try {
-    const hCtrl=new AbortController(); setTimeout(()=>hCtrl.abort(),3000);
-    const hRes = await fetch('https://www.nseindia.com', {
-      headers:{...nseH, Accept:'text/html,application/xhtml+xml'},
-      signal:hCtrl.signal,
-    });
-    const raw = hRes.headers.get('set-cookie')||'';
-    nseCookie = raw.split(/,(?=[a-zA-Z_])/g).map(c=>c.split(';')[0].trim()).filter(Boolean).join('; ');
-  } catch { /* NSE homepage blocked — option chain will be skipped */ }
   async function nseGet(path) {
     try {
-      const headers = {...nseH};
-      if(nseCookie) headers['Cookie'] = nseCookie;
-      const r = await tFetch(`https://www.nseindia.com${path}`, {headers}, 6000);
+      const r = await tFetch(`https://www.nseindia.com${path}`, {headers:nseH}, 5000);
       if(r.ok) return r.json().catch(()=>null);
       return null;
     } catch { return null; }
@@ -244,8 +230,8 @@ async function runAnalysis(req, res, accessToken) {
   const pvDay  = cDay[cDay.length-1];
   const pivot  = pvDay?((pvDay[2]+pvDay[3]+pvDay[4])/3).toFixed(2):0;
   const maxAfford=liveF>0?(liveF/65).toFixed(2):'0';
-  const last20c= c5m.slice(-10).map(c=>`[${c[0].slice(11,16)} O:${c[1].toFixed(1)} H:${c[2].toFixed(1)} L:${c[3].toFixed(1)} C:${c[4].toFixed(1)} V:${c[5]}]`).join('\n');
-  const last15d= cDay.slice(-8).map(c=>`[${c[0].slice(0,10)} O:${c[1].toFixed(1)} H:${c[2].toFixed(1)} L:${c[3].toFixed(1)} C:${c[4].toFixed(1)} V:${c[5]}]`).join('\n');
+  const last20c= c5m.slice(-6).map(c=>`[${c[0].slice(11,16)} O:${c[1].toFixed(0)} H:${c[2].toFixed(0)} L:${c[3].toFixed(0)} C:${c[4].toFixed(0)}]`).join(' ');
+  const last15d= cDay.slice(-5).map(c=>`[${c[0].slice(5,10)} O:${c[1].toFixed(0)} H:${c[2].toFixed(0)} L:${c[3].toFixed(0)} C:${c[4].toFixed(0)}]`).join(' ');
 
   // ── NSE Option Chain ──────────────────────────────────────────────────────
   let pcr='0',callWall=atm,putWall=atm,maxPain=atm,atmCeP=0,atmPeP=0,nxAtmCeP=0,nxAtmPeP=0,ivpVal=0;
@@ -403,19 +389,30 @@ AUTO-TRADE: [YES - CE/PE / NO]
 
   // ── Anthropic API ─────────────────────────────────────────────────────────
   let analysisText='', inputTokens=0, outputTokens=0;
-  const aCtrl=new AbortController(); const aTid=setTimeout(()=>aCtrl.abort(),50000);
-  const aRes = await fetch('https://api.anthropic.com/v1/messages', {
-    method:'POST',
-    headers:{'x-api-key':process.env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','content-type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1500,messages:[{role:'user',content:prompt}]})
-  });
-  clearTimeout(aTid);
-  const aData = await aRes.json();
-  if(!aRes.ok) throw new Error(aData?.error?.message||`Anthropic HTTP ${aRes.status}`);
-  inputTokens  = aData.usage?.input_tokens||0;
-  outputTokens = aData.usage?.output_tokens||0;
-  analysisText = (aData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
-  if(!analysisText) throw new Error('Empty response from Anthropic');
+  try {
+    const aCtrl=new AbortController(); const aTid=setTimeout(()=>aCtrl.abort(),40000);
+    const aRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{'x-api-key':process.env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','content-type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1500,messages:[{role:'user',content:prompt}]}),
+      signal:aCtrl.signal,
+    });
+    clearTimeout(aTid);
+    // Wrap aRes.json() — large streaming responses can be slow
+    const aText = await Promise.race([
+      aRes.text(),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error('Anthropic response body timeout')),8000))
+    ]);
+    const aData = JSON.parse(aText);
+    if(!aRes.ok) throw new Error(aData?.error?.message||`Anthropic HTTP ${aRes.status}`);
+    inputTokens  = aData.usage?.input_tokens||0;
+    outputTokens = aData.usage?.output_tokens||0;
+    analysisText = (aData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
+    if(!analysisText) throw new Error('Empty Anthropic response');
+  } catch(ae) {
+    const msg = ae.name==='AbortError'?'Analysis timed out (40s). Market too busy — try again.':ae.message;
+    return res.status(500).json({error:`model: ${msg}`, kiteErr:null, kiteHttpStatus:0});
+  }
 
   // ── Parse response ────────────────────────────────────────────────────────
   const fi=re=>{const m=analysisText.match(re);return m?parseInt(m[1]):0;};
