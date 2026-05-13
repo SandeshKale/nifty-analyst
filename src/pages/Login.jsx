@@ -85,6 +85,14 @@ export default function Login() {
           ⚠ Kite session token expires at midnight IST daily — re-login each morning.<br/>
           Not SEBI-registered advice. 91% of retail F&O traders lost money FY2024-25.
         </div>
+
+        {/* Version badge */}
+        <div style={{display:'flex',justifyContent:'center',alignItems:'center',gap:8,marginTop:16}}>
+          <span style={{fontSize:11,color:'#374151',fontFamily:'monospace',background:'#0A0A18',padding:'4px 10px',borderRadius:20,border:'1px solid rgba(99,102,241,0.25)'}}>
+            v1.5.3 · 2026-05-13
+          </span>
+          <span style={{fontSize:10,color:'#4B5563'}}>Data: Yahoo + NSE · No Kite sub needed</span>
+        </div>
       </div>
     </div>
   )

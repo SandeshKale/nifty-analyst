@@ -160,6 +160,8 @@ export default function Dashboard() {
   const [tradeMode,   setTradeMode]   = useState('quick')
   const [pendingSignal,   setPendingSignal]   = useState(null)
   const [autoIntervalMin, setAutoIntervalMin] = useState(10)
+  const [apiLog,          setApiLog]          = useState([])   // dev console
+  const [showConsole,     setShowConsole]      = useState(false)
   // Rule 1 & 9: Capital tracking
   const [startCapital,    setStartCapital]    = useState(null)
   // Rule 5: OI flip-flop
@@ -324,6 +326,10 @@ export default function Dashboard() {
           : ` | GTT failed: ${gttData.error}`
       } catch(ge) { gttMsg=` | GTT err: ${ge.message}` }
 
+      setApiLog(l=>{
+        const oTs=new Date().toLocaleTimeString('en-IN',{hour12:false,timeZone:'Asia/Kolkata'})
+        return [{ts:oTs,type:'🛒 ORDER',msg:`BUY ${t.type} ${sym} qty:${qty} OID:${data.orderId}${gttMsg}`,status:'ok',color:'#F59E0B'},...l.slice(0,49)]
+      })
       setOrderMsg(`✅ ${mode} BUY ${t.type} ${sym} qty:${qty} (OID:${data.orderId})${gttMsg}`)
       setPendingSignal(null)
       return true
@@ -415,6 +421,8 @@ export default function Dashboard() {
     elRef.current = setInterval(()=>setElapsed(Math.floor((Date.now()-elStart)/1000)), 1000)
 
     try {
+      const callTs = new Date().toLocaleTimeString('en-IN',{hour12:false,timeZone:'Asia/Kolkata'})
+      setApiLog(l=>[{ts:callTs,type:'→ REQUEST',msg:'POST /api/analyze',status:'pending',color:'#6366F1'},...l.slice(0,49)])
       const res  = await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({accessToken})
@@ -430,6 +438,20 @@ export default function Dashboard() {
         setAutoOn(false); setAtOn(false)
         throw new Error(hint)
       }
+      // Log response
+      setApiLog(l=>{
+        const respTs=new Date().toLocaleTimeString('en-IN',{hour12:false,timeZone:'Asia/Kolkata'})
+        const ok=res.ok
+        const score=data?.score
+        const verdict=data?.verdict
+        const nseSrc=data?.marketData?.nseSrc
+        const inTk=data?.usage?.inputTokens||0, outTk=data?.usage?.outputTokens||0
+        const summary=ok
+          ? `HTTP ${res.status} | Score:${score!=null?score:'?'} | ${verdict||'?'} | ${nseSrc||'?'} | ${inTk}in+${outTk}out tok`
+          : `HTTP ${res.status} ERROR: ${data?.error||'unknown'}`
+        return [{ts:respTs,type:ok?'✅ RESPONSE':'❌ ERROR',msg:summary,status:res.status,
+                 color:ok?'#10B981':'#EF4444'},...l.slice(0,49)]
+      })
       if (!res.ok) {
         const detail = JSON.stringify(data, null, 2)
         setErrDetail(`HTTP ${res.status}\n${detail}`)
@@ -498,6 +520,10 @@ export default function Dashboard() {
     } catch(e) {
       setErr(e.message)
       setErrDetail(e.stack || e.message)
+      setApiLog(l=>{
+        const errTs=new Date().toLocaleTimeString('en-IN',{hour12:false,timeZone:'Asia/Kolkata'})
+        return [{ts:errTs,type:'💥 THROW',msg:e.message.slice(0,80),status:'err',color:'#F87171'},...l.slice(0,49)]
+      })
     } finally {
       clearInterval(elRef.current)
       setBusy(false)
@@ -989,6 +1015,38 @@ export default function Dashboard() {
             <span>Auto 10-min (39/day)</span><span style={{...mono,color:'#F59E0B'}}>{fR(cpc*39)}/day</span>
           </div>
         </div>}
+      </div>
+
+      {/* DEV CONSOLE */}
+      <div style={{margin:'0 12px 8px',borderRadius:10,overflow:'hidden',border:'1px solid rgba(255,255,255,0.06)',background:'#0A0A18'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',cursor:'pointer',userSelect:'none'}}
+          onClick={()=>setShowConsole(p=>!p)}>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <span style={{fontSize:10,color:'#6366F1',fontWeight:800,letterSpacing:'0.1em'}}>DEV CONSOLE</span>
+            <span style={{fontSize:9,color:'#374151',fontFamily:'monospace'}}>{apiLog.length} entries</span>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            <span style={{fontSize:9,color:'#374151',fontFamily:'monospace'}}>v1.5.3 · 2026-05-13</span>
+            <button onClick={e=>{e.stopPropagation();setApiLog([])}}
+              style={{fontSize:9,color:'#374151',background:'none',border:'1px solid rgba(255,255,255,0.06)',borderRadius:4,padding:'2px 6px',cursor:'pointer'}}>CLEAR</button>
+            <span style={{fontSize:10,color:'#374151'}}>{showConsole?'▲':'▼'}</span>
+          </div>
+        </div>
+        {showConsole&&(
+          <div style={{maxHeight:280,overflowY:'auto',borderTop:'1px solid rgba(255,255,255,0.04)'}}>
+            {apiLog.length===0?(
+              <div style={{padding:'16px',textAlign:'center',fontSize:11,color:'#374151',fontFamily:'monospace'}}>
+                No API calls yet — tap Analyse Now
+              </div>
+            ):apiLog.map((entry,i)=>(
+              <div key={i} style={{padding:'6px 12px',borderBottom:'1px solid rgba(255,255,255,0.03)',display:'grid',gridTemplateColumns:'50px 80px 1fr',gap:6,alignItems:'start'}}>
+                <span style={{fontSize:9,color:'#374151',fontFamily:'monospace',paddingTop:1}}>{entry.ts}</span>
+                <span style={{fontSize:9,fontWeight:700,color:entry.color,fontFamily:'monospace',paddingTop:1}}>{entry.type}</span>
+                <span style={{fontSize:10,color:'#9CA3AF',fontFamily:'monospace',wordBreak:'break-all',lineHeight:1.4}}>{entry.msg}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* EMERGENCY STOP */}
