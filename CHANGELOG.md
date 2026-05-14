@@ -217,3 +217,17 @@ Switched `analyze.js` to **Vercel Edge Runtime** (`export const config = { runti
 - `res.status(X).json(Y)` → `new Response(JSON.stringify(Y), {status:X, headers:cors})`
 - `req.body` → `await req.json()` with try-catch
 - `safeJson(code, payload)` → returns `new Response(...)` directly
+
+---
+
+## [1.6.1] — 2026-05-14 — Fix Edge Runtime Conflict with vercel.json
+
+### Root Cause
+`vercel.json` contained a `functions` block:
+```json
+"functions": { "api/*.js": { "maxDuration": 60 } }
+```
+This is a **Serverless Lambda** configuration. When both `export const config = { runtime: 'edge' }` in the code AND a `functions` block in `vercel.json` exist, **vercel.json wins** and the Edge Runtime declaration is silently ignored. The function kept running as a Lambda with the 10-second Hobby plan cap.
+
+### Fix
+Removed the `functions` block from `vercel.json` entirely. Edge Runtime is now declared only in `analyze.js` via `export const config = { runtime: 'edge' }`, which Vercel correctly picks up without the conflicting Lambda config.
