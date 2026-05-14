@@ -346,7 +346,7 @@ async function runAnalysis(req, cors, accessToken) {
   const atmAfford=liveF&&atmCeP?Math.floor(liveF/(atmCeP*65))||0:0;
   const chg=spot-prevCl;
 
-  const dataBlock = !isFresh
+  dataBlock = !isFresh
     ? '⚠️ DATA FEED FAILURE — Nifty spot = 0. MANDATORY STAY OUT on all setups.'
     : `═══ MARKET DATA (${nseSrc}) ═══
 NIFTY 50: ${spot} | Chg: ${chg>=0?'+':''}${isNaN(chg)?0:chg.toFixed(2)} from ${prevCl}
@@ -379,7 +379,7 @@ ${last20c||'No intraday data available'}
 ═══ LAST 15 DAILY CANDLES ═══
 ${last15d||'No daily data available'}`;
 
-  const prompt = `You are a seasoned Nifty 50 F&O analyst (15+ years). Run nifty-options-analyst skill v5.
+  prompt = `You are a seasoned Nifty 50 F&O analyst (15+ years). Run nifty-options-analyst skill v5.
 All market data pre-fetched below. No web searches needed.
 
 TIME: ${istStr} / ${sgtStr} | ${dayName} ${todayDate}
