@@ -193,3 +193,27 @@ All 500 errors occurred during off-hours testing/debugging. Yahoo Finance return
 incomplete data (missing `regularMarketPrice`) outside market hours for NSE indices,
 which caused `toG()` to crash. NSE APIs also behave differently post-close.
 By hard-blocking outside market hours, none of these edge cases can surface.
+
+---
+
+## [1.6.0] — 2026-05-14 — Switch to Vercel Edge Runtime (No Timeout)
+
+### Root Cause (definitive)
+`vercel.json` had `maxDuration: 60` but this only applies to Pro/Team plans.
+On the **Hobby plan**, Serverless Functions are hard-capped at **10 seconds**.
+The analysis function takes ~30s (6s data + ~25s Anthropic). Every call timed out.
+Vercel kills the Lambda silently and returns an HTML error page → client sees HTTP 500 non-JSON.
+
+### Fix
+Switched `analyze.js` to **Vercel Edge Runtime** (`export const config = { runtime: 'edge' }`):
+- Edge Runtime runs on Vercel's global CDN (not Lambda)
+- **No timeout limit** — runs as long as needed, even on Hobby plan
+- Uses Web API `Request`/`Response` instead of Node.js `req`/`res`
+- Same `fetch()` API, no other dependencies needed
+- Cold start: ~0ms (vs Lambda ~800ms)
+
+### Changed
+- `handler(req, res)` → `handler(req)` returning `Response` objects
+- `res.status(X).json(Y)` → `new Response(JSON.stringify(Y), {status:X, headers:cors})`
+- `req.body` → `await req.json()` with try-catch
+- `safeJson(code, payload)` → returns `new Response(...)` directly

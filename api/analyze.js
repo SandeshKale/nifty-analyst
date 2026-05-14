@@ -1,19 +1,24 @@
-// api/analyze.js — Nifty Options Analyst v7
+// api/analyze.js — Nifty Options Analyst v8
+export const config = { runtime: 'edge' };
 // Data: Yahoo Finance (spot/candles/global) + NSE (option chain) + Kite (margins/orders)
 // Fast: parallel fetches, 5s timeouts, no blocking cookie retries
 
-export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') { res.status(200).end(); return; }
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+export default async function handler(req) {
+  const cors = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Content-Type': 'application/json',
+  };
+  if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: cors });
+  if (req.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: cors });
 
-  // Single try-catch wraps EVERYTHING — no uncaught exception reaches Vercel
+  // Single try-catch wraps EVERYTHING
   try {
-    const body = req.body || {};
+    let body = {};
+    try { body = await req.json(); } catch { body = {}; }
     const accessToken = body.accessToken;
-    if (!accessToken) return res.status(400).json({ error: 'accessToken required' });
+    if (!accessToken) return new Response(JSON.stringify({ error: 'accessToken required' }), { status: 400, headers: cors });
 
     // Gate: only run during NSE market hours (9:15–15:30 IST, Mon–Fri)
     const now = new Date();
@@ -26,27 +31,23 @@ export default async function handler(req, res) {
       const reason = isWeekend ? 'Weekend — market closed'
         : mins < 9*60+15 ? `Pre-market — opens at 9:15 AM IST (${9*60+15-mins} min)`
         : 'Post-market — market closed at 3:30 PM IST';
-      return res.status(403).json({ error: `Analysis blocked: ${reason}. Run only during 9:15–15:30 IST Mon–Fri.` });
+      return new Response(JSON.stringify({ error: `Analysis blocked: ${reason}. Run only during 9:15-15:30 IST Mon-Fri.` }), { status: 403, headers: cors });
     }
 
-    return await runAnalysis(req, res, accessToken);
+    return await runAnalysis(req, cors, accessToken);
   } catch(fatal) {
     console.error('Fatal:', fatal.message);
-    try { res.status(500).json({ error: 'Analysis failed: ' + fatal.message }); }
-    catch(e2) { try { res.end(JSON.stringify({ error: fatal.message })); } catch(e3){} }
+    return new Response(JSON.stringify({ error: 'Analysis failed: ' + fatal.message }), { status: 500, headers: cors });
   } catch(fatal) {
     console.error('Fatal handler error:', fatal.message, fatal.stack?.slice(0,500));
-    try { res.status(500).json({ error: 'Analysis failed: ' + fatal.message }); } catch(e2) { res.end(JSON.stringify({ error: fatal.message })); }
+    return new Response(JSON.stringify({ error: 'Analysis failed: ' + fatal.message }), { status: 500, headers: cors });
   }
 }
 
-async function runAnalysis(req, res, accessToken) {
-  // Safety: ensure we always write a response, even if res.json() fails
-  const safeJson = (statusCode, payload) => {
-    try { res.status(statusCode).json(payload); } catch(e2) {
-      try { res.status(statusCode).send(JSON.stringify(payload)); } catch(e3) { /* response gone */ }
-    }
-  };
+async function runAnalysis(req, cors, accessToken) {
+  // Edge-compatible JSON response
+  const safeJson = (statusCode, payload) =>
+    new Response(JSON.stringify(payload), { status: statusCode, headers: cors });
 
   const apiKey = process.env.KITE_API_KEY;
   const kH = { 'Authorization': `token ${apiKey}:${accessToken}`, 'X-Kite-Version': '3' };
@@ -446,7 +447,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
     if(!analysisText) throw new Error('Empty Anthropic response');
   } catch(ae) {
     const msg = ae.name==='AbortError'?'Analysis timed out (40s). Market too busy — try again.':ae.message;
-    return safeJson(500, {error:`model: ${msg}`, kiteErr:null, kiteHttpStatus:0});
+    return safeJson(500, {error:`model: ${msg}`});
   }
 
   // ── Parse response ────────────────────────────────────────────────────────
