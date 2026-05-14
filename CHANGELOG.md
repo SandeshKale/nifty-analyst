@@ -231,3 +231,21 @@ This is a **Serverless Lambda** configuration. When both `export const config = 
 
 ### Fix
 Removed the `functions` block from `vercel.json` entirely. Edge Runtime is now declared only in `analyze.js` via `export const config = { runtime: 'edge' }`, which Vercel correctly picks up without the conflicting Lambda config.
+
+---
+
+## [1.6.2] — 2026-05-14 — Fix Syntax Errors (Tested Locally Before Push)
+
+### Root Cause
+Two syntax errors in `analyze.js` prevented the Edge function from even loading:
+
+1. **Duplicate `catch(fatal)` block** — my regex patching left both old and new catch blocks on a single try, which is invalid JavaScript
+2. **Literal newline inside single-quoted string** — `ocTable='[Yahoo Finance options — limited data]\n'` had an actual line break instead of `\n` escape sequence
+
+### Fixed
+- Removed duplicate catch block
+- Fixed string literal to use escaped `\n`
+- **Tested locally before pushing** — simulated Edge Runtime handler with 3 test cases:
+  - OPTIONS → 200 ✅
+  - POST without token → 400 + JSON ✅
+  - POST with fake token → 500 + JSON "invalid x-api-key" (expected without env var) ✅

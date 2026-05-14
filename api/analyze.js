@@ -38,9 +38,6 @@ export default async function handler(req) {
   } catch(fatal) {
     console.error('Fatal:', fatal.message);
     return new Response(JSON.stringify({ error: 'Analysis failed: ' + fatal.message }), { status: 500, headers: cors });
-  } catch(fatal) {
-    console.error('Fatal handler error:', fatal.message, fatal.stack?.slice(0,500));
-    return new Response(JSON.stringify({ error: 'Analysis failed: ' + fatal.message }), { status: 500, headers: cors });
   }
 }
 
@@ -292,12 +289,9 @@ async function runAnalysis(req, cors, accessToken) {
       const maxPutOI=puts.reduce((b,p)=>(p.openInterest||0)>(b.openInterest||0)?p:b,{});
       if(maxCallOI.strike) callWall=maxCallOI.strike;
       if(maxPutOI.strike)  putWall=maxPutOI.strike;
-      ocTable='[Yahoo Finance options — limited data]
-';
-      ocTable+=`ATM ${atm} CE: Rs${atmCeP.toFixed(1)} | PE: Rs${atmPeP.toFixed(1)} | PCR: ${pcr}
-`;
-      ocTable+=`Call Wall: ${callWall} | Put Wall: ${putWall}
-`;
+      ocTable='[Yahoo Finance options — limited data]\n';
+      ocTable+=`ATM ${atm} CE: Rs${atmCeP.toFixed(1)} | PE: Rs${atmPeP.toFixed(1)} | PCR: ${pcr}\n`;
+      ocTable+=`Call Wall: ${callWall} | Put Wall: ${putWall}\n`;
     } catch(e) { console.error('Yahoo options parse error:',e.message); }
   }
 
