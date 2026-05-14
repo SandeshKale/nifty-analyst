@@ -109,6 +109,22 @@ src/pages/
   Callback.jsx    → OAuth callback
 ```
 
+
+
+## Development & Testing
+
+This project includes a comprehensive test suite that runs automatically before every push:
+
+```bash
+npm run check   # Run all checks (lint + test)
+npm run lint    # ESLint only
+npm run test    # Test suite only
+```
+
+**Pre-push hook:** Every `git push` automatically runs the full test suite. If tests fail, the push is blocked.
+
+See [TESTING.md](TESTING.md) for details.
+
 ## ⚠️ Important
 - Rotate Kite API Secret after deployment
 - Re-login daily (Kite tokens expire at midnight IST)
