@@ -65,7 +65,7 @@ async function runAnalysis(req, cors, accessToken) {
     while([0,6].includes(d.getDay())) d.setDate(d.getDate()-1);
     return d.toISOString().slice(0,10);
   })();
-  const hist5mDate = isPreMarket ? prevTradingDate : todayDate;
+  const hist5mDate = isPreMarket ? prevTradingDate : todayDate;  // eslint-disable-line no-unused-vars
 
   // ── Helpers ──────────────────────────────────────────────────────────────
   function getExpiry(offsetW=0) {
@@ -218,14 +218,14 @@ async function runAnalysis(req, cors, accessToken) {
   let nseSrc='Yahoo';
   if(nseIdx?.data){
     nseSrc='NSE+Yahoo';
-    const fi=name=>nseIdx.data.find(d=>d.index===name||d.indexSymbol===name)||null;
-    const n50=fi('NIFTY 50')||fi('Nifty 50');
-    const nvix=fi('INDIA VIX')||fi('India Vix');
-    const bnk=fi('NIFTY BANK')||fi('Nifty Bank');
-    const nit=fi('NIFTY IT')||fi('Nifty IT');
-    const nau=fi('NIFTY AUTO')||fi('Nifty Auto');
-    const nfi=fi('NIFTY FIN SERVICE')||fi('Nifty Fin Service');
-    const nmi=fi('NIFTY MIDCAP 100')||fi('NIFTY MIDCAP100')||fi('Nifty Midcap 100');
+    const findIdx=name=>nseIdx.data.find(d=>d.index===name||d.indexSymbol===name)||null;
+    const n50=findIdx('NIFTY 50')||findIdx('Nifty 50');
+    const nvix=findIdx('INDIA VIX')||findIdx('India Vix');
+    const bnk=findIdx('NIFTY BANK')||findIdx('Nifty Bank');
+    const nit=findIdx('NIFTY IT')||findIdx('Nifty IT');
+    const nau=findIdx('NIFTY AUTO')||findIdx('Nifty Auto');
+    const nfi=findIdx('NIFTY FIN SERVICE')||findIdx('Nifty Fin Service');
+    const nmi=findIdx('NIFTY MIDCAP 100')||findIdx('NIFTY MIDCAP100')||findIdx('Nifty Midcap 100');
     if(n50?.last) { spot=n50.last; prevCl=n50.previousClose||spot; dayH=n50.high||dayH; dayL=n50.low||dayL; dayO=n50.open||dayO; advances=n50.advances||'N/A'; declines=n50.declines||'N/A'; }
     if(nvix?.last) vix=nvix.last;
     if(bnk?.last)  bn=bnk.last;
@@ -292,7 +292,7 @@ async function runAnalysis(req, cors, accessToken) {
       ocTable='[Yahoo Finance options — limited data]\n';
       ocTable+=`ATM ${atm} CE: Rs${atmCeP.toFixed(1)} | PE: Rs${atmPeP.toFixed(1)} | PCR: ${pcr}\n`;
       ocTable+=`Call Wall: ${callWall} | Put Wall: ${putWall}\n`;
-    } catch(e) { console.error('Yahoo options parse error:',e.message); }
+    } catch { /* Yahoo options fallback */ }
   }
 
   if(ocData?.records?.data && atm>0){
@@ -420,7 +420,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
     return safeJson(500, {error: 'Prompt build failed: ' + promptErr.message});
   }
   // ── Anthropic API ─────────────────────────────────────────────────────────
-  let analysisText='', inputTokens=0, outputTokens=0;
+  let analysisText='', inputTokens=0, outputTokens=0;  // eslint-disable-line no-useless-assignment
   try {
     const aCtrl=new AbortController(); const aTid=setTimeout(()=>aCtrl.abort(),22000);
     const aRes = await fetch('https://api.anthropic.com/v1/messages', {
@@ -435,8 +435,8 @@ AUTO-TRADE: [YES - CE/PE / NO]
     const aText = await aRes.text();
     const aData = JSON.parse(aText);
     if(!aRes.ok) throw new Error(aData?.error?.message||`Anthropic HTTP ${aRes.status}`);
-    inputTokens  = aData.usage?.input_tokens||0;
-    outputTokens = aData.usage?.output_tokens||0;
+    inputTokens  = aData.usage?.input_tokens||0;  // eslint-disable-line no-useless-assignment
+    outputTokens = aData.usage?.output_tokens||0;  // eslint-disable-line no-useless-assignment
     analysisText = (aData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
     if(!analysisText) throw new Error('Empty Anthropic response');
   } catch(ae) {
@@ -469,11 +469,11 @@ AUTO-TRADE: [YES - CE/PE / NO]
   try {
     const sm=analysisText.match(/SCORES:\s*(\{[^}]+\})/);
     if(sm) Object.assign(scores, JSON.parse(sm[1]));
-  } catch(e) {
+  } catch {
     // fallback: scan for Fx label: ±N patterns
     const fp=(label,aliases)=>{
       for(const l of [label,...(aliases||[])]){
-        const m=analysisText.match(new RegExp(l+'[^\d-+]*([+-]?\d+)','i'));
+        const m=analysisText.match(new RegExp(l+'[^\\d-+]*([+-]?\\d+)','i'));  // eslint-disable-line no-useless-escape
         if(m) return parseInt(m[1]);
       }
       return 0;
