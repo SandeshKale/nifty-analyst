@@ -5,7 +5,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint api/ --quiet",
+    "test": "node tests/analyze.test.mjs",
+    "check": "bash scripts/check-all.sh",
+    "precommit": "npm run check"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -13,7 +17,11 @@
     "react-router-dom": "^6.26.2"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@vitejs/plugin-react": "^4.3.1",
+    "eslint": "^10.3.0",
+    "prettier": "^3.8.3",
     "vite": "^5.4.8"
-  }
+  },
+  "type": "module"
 }
