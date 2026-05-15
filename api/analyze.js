@@ -422,11 +422,11 @@ AUTO-TRADE: [YES - CE/PE / NO]
   // ── Anthropic API ─────────────────────────────────────────────────────────
   let analysisText='', inputTokens=0, outputTokens=0;  // eslint-disable-line no-useless-assignment
   try {
-    const aCtrl=new AbortController(); const aTid=setTimeout(()=>aCtrl.abort(),22000);
+    const aCtrl=new AbortController(); const aTid=setTimeout(()=>aCtrl.abort(),25000);
     const aRes = await fetch('https://api.anthropic.com/v1/messages', {
       method:'POST',
       headers:{'x-api-key':process.env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','content-type':'application/json'},
-      body:JSON.stringify({model:'claude-3-5-haiku-20241022',max_tokens:1000,messages:[{role:'user',content:prompt}]}),
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1400,messages:[{role:'user',content:prompt}]}),
       signal:aCtrl.signal,
     });
     clearTimeout(aTid);

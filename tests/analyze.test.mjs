@@ -121,9 +121,14 @@ test('Uses correct Anthropic model ID', () => {
   assert.ok(match, 'No model specified');
   const model = match[1];
   
-  // Valid formats: claude-3-5-sonnet-YYYYMMDD, claude-3-5-haiku-YYYYMMDD
-  const validPattern = /^claude-\d+-\d+-(sonnet|haiku|opus)-\d{8}$/;
-  assert.ok(validPattern.test(model), `Invalid model ID: ${model}. Should be: claude-3-5-haiku-20241022`);
+  // Valid formats: 
+  // Old: claude-3-5-sonnet-YYYYMMDD
+  // New: claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5-YYYYMMDD
+  const oldFormat = /^claude-\d+-\d+-(sonnet|haiku|opus)-\d{8}$/;
+  const newFormat = /^claude-(sonnet|haiku|opus)-\d+-\d+(-\d{8})?$/;
+  
+  const isValid = oldFormat.test(model) || newFormat.test(model);
+  assert.ok(isValid, `Invalid model ID: ${model}. Should match claude-X-Y-variant-DATE or claude-variant-X-Y`);
 });
 
 // Test 6: Uses Response objects (Edge API), not res.json()
