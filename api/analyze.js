@@ -1,24 +1,32 @@
-// api/analyze.js — Nifty Options Analyst v8
-export const config = { runtime: 'edge' };
+// api/analyze.js — Nifty Options Analyst v9
+// Using Node.js runtime with Fluid Compute (up to 800s on Pro, 300s on Hobby)
 // Data: Yahoo Finance (spot/candles/global) + NSE (option chain) + Kite (margins/orders)
 // Fast: parallel fetches, 5s timeouts, no blocking cookie retries
 
-export default async function handler(req) {
-  const cors = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Content-Type': 'application/json',
-  };
-  if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: cors });
-  if (req.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: cors });
+export default async function handler(req, res) {
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+  
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
   // Single try-catch wraps EVERYTHING
   try {
-    let body = {};
-    try { body = await req.json(); } catch { body = {}; }
+    const body = req.body || {};
     const accessToken = body.accessToken;
-    if (!accessToken) return new Response(JSON.stringify({ error: 'accessToken required' }), { status: 400, headers: cors });
+    const useDeepSeek = body.useDeepSeek || false;  // Toggle for model selection
+    
+    if (!accessToken) {
+      return res.status(400).json({ error: 'accessToken required' });
+    }
 
     // Gate: only run during NSE market hours (9:15–15:30 IST, Mon–Fri)
     const now = new Date();
@@ -31,20 +39,18 @@ export default async function handler(req) {
       const reason = isWeekend ? 'Weekend — market closed'
         : mins < 9*60+15 ? `Pre-market — opens at 9:15 AM IST (${9*60+15-mins} min)`
         : 'Post-market — market closed at 3:30 PM IST';
-      return new Response(JSON.stringify({ error: `Analysis blocked: ${reason}. Run only during 9:15-15:30 IST Mon-Fri.` }), { status: 403, headers: cors });
+      return res.status(403).json({ error: `Analysis blocked: ${reason}. Run only during 9:15-15:30 IST Mon-Fri.` });
     }
 
-    return await runAnalysis(req, cors, accessToken);
+    return await runAnalysis(req, res, accessToken, useDeepSeek);
   } catch(fatal) {
     console.error('Fatal:', fatal.message);
-    return new Response(JSON.stringify({ error: 'Analysis failed: ' + fatal.message }), { status: 500, headers: cors });
+    return res.status(500).json({ error: 'Analysis failed: ' + fatal.message });
   }
 }
 
-async function runAnalysis(req, cors, accessToken) {
-  // Edge-compatible JSON response
-  const safeJson = (statusCode, payload) =>
-    new Response(JSON.stringify(payload), { status: statusCode, headers: cors });
+async function runAnalysis(req, res, accessToken, useDeepSeek) {
+
 
   const apiKey = process.env.KITE_API_KEY;
   const kH = { 'Authorization': `token ${apiKey}:${accessToken}`, 'X-Kite-Version': '3' };
@@ -417,16 +423,30 @@ AUTO-TRADE: [YES - CE/PE / NO]
 
   } catch(promptErr) {
     console.error('Prompt build error:', promptErr.message);
-    return safeJson(500, {error: 'Prompt build failed: ' + promptErr.message});
+    return res.status(500).json({error: 'Prompt build failed: ' + promptErr.message});
   }
   // ── Anthropic API ─────────────────────────────────────────────────────────
   let analysisText='', inputTokens=0, outputTokens=0;  // eslint-disable-line no-useless-assignment
   try {
     const aCtrl=new AbortController(); const aTid=setTimeout(()=>aCtrl.abort(),25000);
-    const aRes = await fetch('https://api.anthropic.com/v1/messages', {
+        const apiUrl = useDeepSeek 
+      ? 'https://openrouter.ai/api/v1/chat/completions'
+      : 'https://api.anthropic.com/v1/messages';
+    const apiKey = useDeepSeek
+      ? process.env.OPENROUTER_API_KEY
+      : process.env.ANTHROPIC_API_KEY;
+    const headers = useDeepSeek
+      ? {'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json'}
+      : {'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'};
+    
+    const aRes = await fetch(apiUrl, {
       method:'POST',
-      headers:{'x-api-key':process.env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','content-type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1400,messages:[{role:'user',content:prompt}]}),
+      headers:headers,
+            body:JSON.stringify({
+        model: useDeepSeek ? 'deepseek-v4-flash' : 'claude-sonnet-4-6',
+        max_tokens: useDeepSeek ? 2000 : 1400,
+        messages:[{role:'user',content:prompt}]
+      }),
       signal:aCtrl.signal,
     });
     clearTimeout(aTid);
@@ -441,7 +461,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
     if(!analysisText) throw new Error('Empty Anthropic response');
   } catch(ae) {
     const msg = ae.name==='AbortError'?'Analysis timed out (40s). Market too busy — try again.':ae.message;
-    return safeJson(500, {error:`model: ${msg}`});
+    return res.status(500).json({error:`model: ${msg}`});
   }
 
   // ── Parse response ────────────────────────────────────────────────────────

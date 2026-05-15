@@ -148,6 +148,7 @@ export default function Dashboard() {
   const [atOn,        setAtOn]        = useState(false)
   const [stopped,     setStopped]     = useState(false)
   const [position,    setPosition]    = useState(null)
+  const [useDeepSeek, setUseDeepSeek] = useState(false)  // Model toggle
   const [tradeLog,    setTradeLog]    = useState([])
   const [inTok,       setInTok]       = useState(0)
   const [outTok,      setOutTok]      = useState(0)
@@ -441,7 +442,7 @@ export default function Dashboard() {
       setApiLog(l=>[{ts:callTs,type:'→ REQUEST',msg:'POST /api/analyze',status:'pending',color:'#6366F1'},...l.slice(0,49)])
       const res  = await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({accessToken})
+        body:JSON.stringify({accessToken, useDeepSeek})
       })
       // Guard: Vercel returns HTML on 504/502 — res.json() would throw
       const rawText = await res.text()
@@ -544,7 +545,7 @@ export default function Dashboard() {
       clearInterval(elRef.current)
       setBusy(false)
     }
-  },[busy,stopped,accessToken,handleAutoTrade])
+  },[busy,stopped,accessToken,useDeepSeek,handleAutoTrade])
 
   // ── Auto-analysis loop (gated to market hours) ─────────────────────────────
   useEffect(()=>{
@@ -826,6 +827,27 @@ export default function Dashboard() {
 
       {/* ANALYSE BUTTON */}
       <div style={{padding:'8px 12px'}}>
+        {/* Model Toggle */}
+        <div style={{marginBottom:12,padding:'10px 12px',background:'#111120',borderRadius:8}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div>
+              <div style={{fontSize:12,fontWeight:700,color:'#E8E8F8'}}>AI Model</div>
+              <div style={{fontSize:10,color:'#6B7280',marginTop:2}}>
+                {useDeepSeek ? '⚡ DeepSeek V4 Flash (~19s, 98% cheaper)' : '🧠 Claude Sonnet 4.6 (~29s, best quality)'}
+              </div>
+            </div>
+            <button 
+              onClick={()=>setUseDeepSeek(!useDeepSeek)}
+              disabled={busy||stopped}
+              style={{padding:'6px 12px',borderRadius:6,border:'1px solid #6366F1',
+                background:useDeepSeek?'rgba(16,185,129,0.2)':'rgba(99,102,241,0.2)',
+                color:useDeepSeek?'#10B981':'#A5B4FC',fontSize:11,fontWeight:700,
+                cursor:busy||stopped?'not-allowed':'pointer',transition:'all 0.2s'}}>
+              {useDeepSeek?'DeepSeek':'Claude'}
+            </button>
+          </div>
+        </div>
+        
         <button onClick={()=>!stopped&&!busy&&analyse()} disabled={busy||stopped||!isMarketOpen()}
           style={{width:'100%',padding:16,borderRadius:10,border:'none',
             fontWeight:700,fontSize:16,letterSpacing:'0.05em',
