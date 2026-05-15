@@ -108,39 +108,33 @@ test('No literal newlines in single-quoted strings', () => {
   }
 });
 
-// Test 4: Edge Runtime config present
-test('Edge Runtime config is declared', () => {
+// Test 4: Node.js Runtime (no Edge config)
+test('Uses Node.js runtime (no Edge config)', () => {
   const src = readFileSync('api/analyze.js', 'utf8');
-  assert.ok(src.includes("runtime: 'edge'"), 'Missing Edge Runtime config');
+  assert.ok(!src.includes("runtime: 'edge'"), 'Should NOT have Edge Runtime config - using Node.js runtime');
 });
 
-// Test 5: Correct model ID format
-test('Uses correct Anthropic model ID', () => {
+// Test 5: Correct model ID format (supports both Claude and DeepSeek)
+test('Uses correct Anthropic or DeepSeek model ID', () => {
   const src = readFileSync('api/analyze.js', 'utf8');
-  const match = src.match(/model:\s*['"]([^'"]+)['"]/);
-  assert.ok(match, 'No model specified');
-  const model = match[1];
   
-  // Valid formats: 
-  // Old: claude-3-5-sonnet-YYYYMMDD
-  // New: claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5-YYYYMMDD
-  const oldFormat = /^claude-\d+-\d+-(sonnet|haiku|opus)-\d{8}$/;
-  const newFormat = /^claude-(sonnet|haiku|opus)-\d+-\d+(-\d{8})?$/;
+  // Should have either claude-sonnet-4-6 or deepseek-v4-flash
+  const hasClaudeModel = src.includes('claude-sonnet-4-6') || src.includes('claude-opus-4-6') || src.includes('claude-haiku-4-5');
+  const hasDeepSeekModel = src.includes('deepseek-v4-flash') || src.includes('deepseek-v4-pro');
   
-  const isValid = oldFormat.test(model) || newFormat.test(model);
-  assert.ok(isValid, `Invalid model ID: ${model}. Should match claude-X-Y-variant-DATE or claude-variant-X-Y`);
+  assert.ok(hasClaudeModel || hasDeepSeekModel, 'No valid model specified (should have claude-sonnet-4-6 or deepseek-v4-flash)');
 });
 
-// Test 6: Uses Response objects (Edge API), not res.json()
-test('Uses Edge Runtime Response API (not Lambda res.json)', () => {
+// Test 6: Uses Node.js runtime API (res.status().json()), not Edge Runtime
+test('Uses Node.js runtime API (res.status().json())', () => {
   const src = readFileSync('api/analyze.js', 'utf8');
   
-  // Should have "new Response"
-  assert.ok(src.includes('new Response('), 'Missing Edge Response objects');
+  // Should have res.status().json() pattern (Node.js runtime)
+  const nodePattern = /res\.status\(\d+\)\.json\(/;
+  assert.ok(nodePattern.test(src), 'Missing Node.js pattern res.status().json()');
   
-  // Should NOT have res.status().json() pattern (Lambda)
-  const lambdaPattern = /res\.status\(\d+\)\.json\(/;
-  assert.ok(!lambdaPattern.test(src), 'Found Lambda pattern res.status().json() — should use new Response()');
+  // Should NOT have "new Response" (Edge Runtime)
+  assert.ok(!src.includes('new Response('), 'Should NOT use Edge Runtime new Response() — using Node.js runtime');
 });
 
 // Test 7: No const shadowing in critical sections
@@ -181,66 +175,86 @@ writeFileSync('/tmp/test-handler-final.mjs', src);
 await import('/tmp/test-handler-final.mjs');
 const handler = globalThis.testHandler;
 
+// Helper to create Node.js-style mock req/res objects
+function createNodeMocks(method, body = null) {
+  const req = {
+    method,
+    body,
+    headers: body ? { 'content-type': 'application/json' } : {}
+  };
+  
+  let statusCode = 200;
+  let responseBody = null;
+  let headers = {};
+  
+  const res = {
+    setHeader: (key, value) => { headers[key] = value; },
+    status: (code) => {
+      statusCode = code;
+      return res;
+    },
+    json: (data) => {
+      responseBody = data;
+      return { statusCode, body: responseBody, headers };
+    },
+    end: () => {
+      return { statusCode, body: '', headers };
+    }
+  };
+  
+  return { req, res, getResponse: () => ({ statusCode, body: responseBody, headers }) };
+}
+
 // Test 8: OPTIONS request returns 200
 await asyncTest('OPTIONS request returns 200', async () => {
-  const req = new Request('http://localhost/api/analyze', { method: 'OPTIONS' });
-  const res = await handler(req);
-  assert.strictEqual(res.status, 200, `Expected 200, got ${res.status}`);
+  const { req, res, getResponse } = createNodeMocks('OPTIONS');
+  await handler(req, res);
+  const response = getResponse();
+  assert.strictEqual(response.statusCode, 200, `Expected 200, got ${response.statusCode}`);
 });
 
 // Test 9: POST without token returns 400 + JSON
 await asyncTest('POST without accessToken returns 400 + JSON error', async () => {
-  const req = new Request('http://localhost/api/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({})
-  });
-  const res = await handler(req);
-  assert.strictEqual(res.status, 400, `Expected 400, got ${res.status}`);
+  const { req, res, getResponse } = createNodeMocks('POST', {});
+  await handler(req, res);
+  const response = getResponse();
+  assert.strictEqual(response.statusCode, 400, `Expected 400, got ${response.statusCode}`);
   
-  const json = JSON.parse(await res.text());
-  assert.ok(json.error, 'Missing error field');
-  assert.ok(json.error.includes('accessToken'), 'Error should mention accessToken');
+  assert.ok(response.body, 'Missing response body');
+  assert.ok(response.body.error, 'Missing error field');
+  assert.ok(response.body.error.includes('accessToken'), 'Error should mention accessToken');
 });
 
 // Test 10: Full pipeline returns valid JSON (will fail auth but shouldn't crash)
 await asyncTest('Full pipeline returns valid JSON (even with fake token)', async () => {
-  const req = new Request('http://localhost/api/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accessToken: 'fake_token_test' })
-  });
+  const { req, res, getResponse } = createNodeMocks('POST', { accessToken: 'fake_token_test' });
   
   const start = Date.now();
-  const res = await handler(req);
+  await handler(req, res);
   const elapsed = Date.now() - start;
+  const response = getResponse();
   
   // Should complete in reasonable time (no infinite loops)
   assert.ok(elapsed < 30000, `Took ${elapsed}ms — should be <30s`);
   
   // Should return JSON
-  const text = await res.text();
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch (e) {
-    throw new Error(`Response is not JSON. First 200 chars: ${text.slice(0, 200)}`);
-  }
+  assert.ok(response.body, 'Missing response body');
   
   // Should have error (no real API key) or success structure
-  assert.ok(json.error || json.score !== undefined, 'Response should have error or score field');
+  assert.ok(response.body.error || response.body.score !== undefined, 'Response should have error or score field');
   
   console.log(`  ${YELLOW}→${RESET} Completed in ${(elapsed / 1000).toFixed(1)}s`);
-  if (json.error) {
-    console.log(`  ${YELLOW}→${RESET} Error (expected): ${json.error.slice(0, 80)}`);
+  if (response.body.error) {
+    console.log(`  ${YELLOW}→${RESET} Error (expected): ${response.body.error.slice(0, 80)}`);
   }
 });
 
 // Test 11: GET returns 405
 await asyncTest('GET request returns 405 Method Not Allowed', async () => {
-  const req = new Request('http://localhost/api/analyze', { method: 'GET' });
-  const res = await handler(req);
-  assert.strictEqual(res.status, 405, `Expected 405, got ${res.status}`);
+  const { req, res, getResponse } = createNodeMocks('GET');
+  await handler(req, res);
+  const response = getResponse();
+  assert.strictEqual(response.statusCode, 405, `Expected 405, got ${response.statusCode}`);
 });
 
 console.log(`\n=== RESULTS ===`);

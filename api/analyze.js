@@ -195,9 +195,9 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
   const yI=gv(yIntra), yD=gv(yDaily), yBNv=gv(yBN), yVixv=gv(yVix);
 
   // Build candle arrays from Yahoo Finance format
-  function buildCandles(res) {
-    if(!res?.timestamp) return [];
-    const ts=res.timestamp, q=res.indicators?.quote?.[0]||{};
+  function buildCandles(data) {
+    if(!data?.timestamp) return [];
+    const ts=data.timestamp, q=data.indicators?.quote?.[0]||{};
     const out=[];
     for(let i=0;i<ts.length;i++){
       const o=q.open?.[i],h=q.high?.[i],l=q.low?.[i],c=q.close?.[i],v=q.volume?.[i];
@@ -432,12 +432,12 @@ AUTO-TRADE: [YES - CE/PE / NO]
         const apiUrl = useDeepSeek 
       ? 'https://openrouter.ai/api/v1/chat/completions'
       : 'https://api.anthropic.com/v1/messages';
-    const apiKey = useDeepSeek
+    const aiApiKey = useDeepSeek
       ? process.env.OPENROUTER_API_KEY
       : process.env.ANTHROPIC_API_KEY;
     const headers = useDeepSeek
-      ? {'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json'}
-      : {'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'};
+      ? {'Authorization': `Bearer ${aiApiKey}`, 'Content-Type': 'application/json'}
+      : {'x-api-key': aiApiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'};
     
     const aRes = await fetch(apiUrl, {
       method:'POST',
@@ -507,7 +507,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
   const maxAffordLots=liveF&&atmCeP?Math.floor(liveF/(atmCeP*65))||0:0;
   const lotsStr=`${maxAffordLots} lot(s) at ATM (Rs${atmCeP}/unit x 65 = Rs${(atmCeP*65).toFixed(0)}/lot)`;
 
-  return safeJson(200, {
+  return res.status(200).json({
     score,verdict,autoTrade,
     quickSymbol,quickEntryL,quickEntryH,quickSl,
     swingSymbol,swingEntryL,swingEntryH,swingSl,
