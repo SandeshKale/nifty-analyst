@@ -449,7 +449,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
         method: 'POST',
         headers,
         body: JSON.stringify({
-          model: useDeepSeek ? 'deepseek/deepseek-chat-v3-0324:free' : 'claude-sonnet-4-6',
+          model: useDeepSeek ? 'deepseek/deepseek-v4-flash:free' : 'claude-sonnet-4-6',
           max_tokens: useDeepSeek ? 2000 : 1400,
           messages: [{role:'user', content:prompt}]
         }),
