@@ -3,18 +3,36 @@ import { useNavigate } from 'react-router-dom'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const AUTO_INTERVAL_MS = 10 * 60 * 1000
-const COST_IN  = 3  / 1_000_000 * 90
-const COST_OUT = 15 / 1_000_000 * 90
+// Cost per million tokens (INR @ ~84 USD/INR)
+// Groq free = ₹0, Sonnet = $3/$15, Opus = $5/$25
+const MODEL_COSTS = {
+  'llama-3.3-70b-versatile': { in: 0,  out: 0  },   // Groq free tier
+  'claude-sonnet-4-6':       { in: 3,  out: 15 },   // USD per M tokens
+  'claude-opus-4-6':         { in: 5,  out: 25 },   // USD per M tokens
+}
+const USD_INR = 84
+function modelCost(model, inTok, outTok) {
+  const rates = MODEL_COSTS[model] || MODEL_COSTS['claude-sonnet-4-6']
+  return (rates.in * inTok + rates.out * outTok) / 1_000_000 * USD_INR
+}
+const COST_IN  = 3  / 1_000_000 * USD_INR   // Sonnet default (fallback)
+const COST_OUT = 15 / 1_000_000 * USD_INR
 const LOT_SIZE = 65
 const AUTO_TRADE_CE = 8
 const AUTO_TRADE_PE = -8
 
 const FACTORS = [
-  {key:'f1',label:'VIX Analysis'},{key:'f2',label:'PCR & OI'},
-  {key:'f3',label:'Intraday Action'},{key:'f4',label:'Daily Trend'},
-  {key:'f5',label:'Sectoral Health'},{key:'f6',label:'FII / DII'},
-  {key:'f7',label:'Market Breadth'},{key:'f8',label:'Global Cues'},
-  {key:'f9',label:'IV & Greeks'},{key:'f10',label:'Event Risk'},
+  {key:'f1', label:'F1  VIX'           },
+  {key:'f2', label:'F2  PCR / OI'      },
+  {key:'f3', label:'F3  Intraday'      },
+  {key:'f4', label:'F4  Trend'         },
+  {key:'f5', label:'F5  Sector'        },
+  {key:'f6', label:'F6  FII'           },
+  {key:'f7', label:'F7  Breadth'       },
+  {key:'f8', label:'F8  Global'        },
+  {key:'f9', label:'F9  IV / IVP'      },
+  {key:'f10',label:'F10 Events'        },
+  {key:'f11',label:'F11 Sentiment'     },
 ]
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -148,7 +166,9 @@ export default function Dashboard() {
   const [atOn,        setAtOn]        = useState(false)
   const [stopped,     setStopped]     = useState(false)
   const [position,    setPosition]    = useState(null)
-  const [useDeepSeek, setUseDeepSeek] = useState(false)  // Model toggle
+  const [useDeepSeek, setUseDeepSeek] = useState(false)  // Legacy override → routes to Groq
+  const [lastModel,   setLastModel]   = useState(null)  // usedModel from last response
+  const [lastTier,    setLastTier]    = useState(null)  // routingTier from last response
   const [tradeLog,    setTradeLog]    = useState([])
   const [inTok,       setInTok]       = useState(0)
   const [outTok,      setOutTok]      = useState(0)
@@ -200,7 +220,7 @@ export default function Dashboard() {
 
   const accessToken = localStorage.getItem('kite_access_token')
   const userName    = localStorage.getItem('kite_user_name')||'Trader'
-  const totalCost   = inTok*COST_IN + outTok*COST_OUT
+  // totalCost now accumulated per-model in state (Groq calls = ₹0)
   const cpc         = calls>0?totalCost/calls:0
 
   const logout = () => { localStorage.clear(); navigate('/login') }
@@ -463,8 +483,10 @@ export default function Dashboard() {
         const verdict=data?.verdict
         const nseSrc=data?.marketData?.nseSrc
         const inTk=data?.usage?.inputTokens||0, outTk=data?.usage?.outputTokens||0
+        const model=data?.usedModel||data?.usage?.usedModel||'?'
+        const tier=data?.routingTier||'?'
         const summary=ok
-          ? `HTTP ${res.status} | Score:${score!=null?score:'?'} | ${verdict||'?'} | ${nseSrc||'?'} | ${inTk}in+${outTk}out tok`
+          ? `HTTP ${res.status} | Score:${score!=null?score:'?'} | ${verdict||'?'} | ${model} [${tier}] | ${inTk}in+${outTk}out tok`
           : `HTTP ${res.status} ERROR: ${data?.error||'unknown'}`
         return [{ts:respTs,type:ok?'✅ RESPONSE':'❌ ERROR',msg:summary,status:res.status,
                  color:ok?'#10B981':'#EF4444'},...l.slice(0,49)]
@@ -483,6 +505,8 @@ export default function Dashboard() {
       }
 
       setResult(data)
+      if (data.usedModel)   setLastModel(data.usedModel)
+      if (data.routingTier) setLastTier(data.routingTier)
       // Rule 1: Set starting capital on first analysis
       if (!startCapital && data.marketData?.liveF > 0) setStartCapital(data.marketData.liveF)
 
@@ -521,8 +545,14 @@ export default function Dashboard() {
         }
       }
 
-      setInTok(p=>p+(data.usage?.inputTokens||0))
-      setOutTok(p=>p+(data.usage?.outputTokens||0))
+      const _inTk  = data.usage?.inputTokens||0
+      const _outTk = data.usage?.outputTokens||0
+      const _model = data.usedModel||'claude-sonnet-4-6'
+      setInTok(p=>p+_inTk)
+      setOutTok(p=>p+_outTk)
+      // Track cost per-model (Groq = ₹0)
+      const _callCost = modelCost(_model, _inTk, _outTk)
+      setTotalCost(p=>p+_callCost)
       setCalls(p=>p+1)
 
       // Auto-trade: fires on BOTH manual and auto analysis if toggle is ON
@@ -828,23 +858,49 @@ export default function Dashboard() {
       {/* ANALYSE BUTTON */}
       <div style={{padding:'8px 12px'}}>
         {/* Model Toggle */}
+        {/* Smart Model Routing Panel */}
         <div style={{marginBottom:12,padding:'10px 12px',background:'#111120',borderRadius:8}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-            <div>
+            <div style={{flex:1}}>
               <div style={{fontSize:12,fontWeight:700,color:'#E8E8F8'}}>AI Model</div>
               <div style={{fontSize:10,color:'#6B7280',marginTop:2}}>
-                {useDeepSeek ? '⚡ DeepSeek V4 Flash (~19s, 98% cheaper)' : '🧠 Claude Sonnet 4.6 (~29s, best quality)'}
+                {lastTier==='groq-free'
+                  ? '⚡ Groq Llama 3.3 70B — free tier (|score|≥12)'
+                  : lastTier==='sonnet'
+                  ? '🧠 Claude Sonnet 4.6 — mid range (|score| 8–11)'
+                  : lastTier==='opus'
+                  ? '🎯 Claude Opus 4.6 — grey zone (|score|≤7)'
+                  : useDeepSeek
+                  ? '⚡ Groq override active (legacy DeepSeek toggle)'
+                  : '🔀 Auto-routing: Groq → Sonnet → Opus by score'}
               </div>
             </div>
-            <button 
-              onClick={()=>setUseDeepSeek(!useDeepSeek)}
-              disabled={busy||stopped}
-              style={{padding:'6px 12px',borderRadius:6,border:'1px solid #6366F1',
-                background:useDeepSeek?'rgba(16,185,129,0.2)':'rgba(99,102,241,0.2)',
-                color:useDeepSeek?'#10B981':'#A5B4FC',fontSize:11,fontWeight:700,
-                cursor:busy||stopped?'not-allowed':'pointer',transition:'all 0.2s'}}>
-              {useDeepSeek?'DeepSeek':'Claude'}
-            </button>
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              {/* Groq override toggle (replaces DeepSeek) */}
+              <button
+                onClick={()=>setUseDeepSeek(!useDeepSeek)}
+                disabled={busy||stopped}
+                title={useDeepSeek?'Groq override ON — all calls go to Groq free':'Auto-routing by score'}
+                style={{padding:'5px 10px',borderRadius:6,border:`1px solid ${useDeepSeek?'#10B981':'rgba(255,255,255,0.1)'}`,
+                  background:useDeepSeek?'rgba(16,185,129,0.15)':'rgba(255,255,255,0.04)',
+                  color:useDeepSeek?'#10B981':'#4B5563',fontSize:10,fontWeight:700,
+                  cursor:busy||stopped?'not-allowed':'pointer',transition:'all 0.2s',whiteSpace:'nowrap'}}>
+                {useDeepSeek?'⚡ Groq':'AUTO'}
+              </button>
+              {/* Last used model badge */}
+              <div style={{padding:'5px 10px',borderRadius:6,border:'1px solid rgba(255,255,255,0.08)',
+                background:'rgba(255,255,255,0.04)',whiteSpace:'nowrap',
+                color: lastTier==='groq-free'?'#10B981': lastTier==='sonnet'?'#A5B4FC': lastTier==='opus'?'#F59E0B':'#4B5563',
+                fontSize:10,fontWeight:700}}>
+                {lastTier==='groq-free'?'Groq': lastTier==='sonnet'?'Sonnet': lastTier==='opus'?'Opus':'—'}
+              </div>
+            </div>
+          </div>
+          {/* Routing legend */}
+          <div style={{display:'flex',gap:8,marginTop:8,fontSize:9,color:'#374151'}}>
+            <span style={{color:'#10B981'}}>⚡ |≥12| → Groq (free)</span>
+            <span style={{color:'#A5B4FC'}}>🧠 |8–11| → Sonnet</span>
+            <span style={{color:'#F59E0B'}}>🎯 |≤7| → Opus</span>
           </div>
         </div>
         
@@ -911,21 +967,48 @@ export default function Dashboard() {
       {/* SCORECARD */}
       {result&&(
         <div style={card}>
-          <div style={sec}>10-Factor Scorecard</div>
+          <div style={sec}>11-Factor Scorecard</div>
+          {/* One-liner per factor: score bar + raw value from analysis text */}
           {FACTORS.map(({key,label})=>{
-            const v=sc[key]??0; const c=v>0?'#10B981':v<0?'#EF4444':'#374151'
+            const v=sc[key]??0
+            const c=v>0?'#10B981':v<0?'#EF4444':'#374151'
+            // Extract the one-liner for this factor from analysis text
+            // Format: "F1  VIX:  -2  19.76 +5.16%  — rising sharply"
+            const fNum = key.replace('f','')
+            const lineRe = new RegExp(`F${fNum}\\s+\\S+[^\\n]*`, 'i')
+            const lineMatch = result?.analysis?.match(lineRe)
+            // Strip the label prefix, keep just the raw value + reason
+            const rawLine = lineMatch
+              ? lineMatch[0].replace(/^F\d+\s+\S+:\s*/i, '').trim()
+              : null
             return (
-              <div key={key} style={{display:'flex',alignItems:'center',padding:'5px 0',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
-                <div style={{flex:1,fontSize:12,color:'#9CA3AF'}}>{label}</div>
-                <FactorBar value={v}/>
-                <div style={{width:28,textAlign:'right',...mono,fontSize:12,color:c,marginLeft:6}}>{v>0?`+${v}`:v}</div>
+              <div key={key} style={{padding:'5px 0',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
+                <div style={{display:'flex',alignItems:'center'}}>
+                  <div style={{width:90,fontSize:11,color:'#6B7280',fontFamily:'monospace',flexShrink:0}}>{label}</div>
+                  <FactorBar value={v}/>
+                  <div style={{width:28,textAlign:'right',...mono,fontSize:12,color:c,marginLeft:6,flexShrink:0}}>{v>0?`+${v}`:v}</div>
+                </div>
+                {rawLine&&(
+                  <div style={{fontSize:10,color:'#4B5563',fontFamily:'monospace',marginTop:1,paddingLeft:90,lineHeight:1.3}}>
+                    {rawLine.length>80 ? rawLine.slice(0,80)+'…' : rawLine}
+                  </div>
+                )}
               </div>
             )
           })}
           <div style={{display:'flex',justifyContent:'space-between',paddingTop:8,borderTop:'1px solid rgba(255,255,255,0.08)',marginTop:4}}>
             <span style={{fontSize:12,fontWeight:700,color:'#9CA3AF'}}>TOTAL</span>
-            <span style={{...mono,fontWeight:900,fontSize:16,color:col}}>{score>0?`+${score}`:score} / ±30</span>
+            <span style={{...mono,fontWeight:900,fontSize:16,color:col}}>{score>0?`+${score}`:score} / ±33</span>
           </div>
+          {/* Model used badge */}
+          {lastModel&&(
+            <div style={{marginTop:8,display:'flex',justifyContent:'space-between',fontSize:10,color:'#374151'}}>
+              <span>Model used</span>
+              <span style={{...mono,color: lastTier==='groq-free'?'#10B981': lastTier==='sonnet'?'#A5B4FC':'#F59E0B'}}>
+                {lastModel} [{lastTier}]
+              </span>
+            </div>
+          )}
         </div>
       )}
 
