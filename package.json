@@ -9,7 +9,10 @@
     "lint": "eslint api/ --quiet",
     "test": "node tests/analyze.test.mjs",
     "check": "bash scripts/check-all.sh",
-    "precommit": "npm run check"
+    "precommit": "npm run check",
+    "format": "prettier --write api/ src/",
+    "format:check": "prettier --check api/ src/",
+    "lint:fix": "eslint api/ --fix"
   },
   "dependencies": {
     "react": "^18.3.1",

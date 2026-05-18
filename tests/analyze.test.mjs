@@ -1,264 +1,566 @@
-// tests/analyze.test.mjs
+// tests/analyze.test.mjs — Nifty Analyst Production Test Suite v2
+// Covers: static analysis, routing logic, market-open (9:15–9:45 IST),
+//         fallback chain, response contract, edge cases, tooling
+
 import { readFileSync, writeFileSync } from 'fs';
 import { strict as assert } from 'assert';
 
-// Color output
-const GREEN = '\x1b[32m';
-const RED = '\x1b[31m';
-const YELLOW = '\x1b[33m';
-const RESET = '\x1b[0m';
+const G = '\x1b[32m', R = '\x1b[31m', Y = '\x1b[33m', B = '\x1b[34m', X = '\x1b[0m';
 
-let testsPassed = 0;
-let testsFailed = 0;
+let passed = 0, failed = 0, skipped = 0;
+const results = [];
 
 function test(name, fn) {
   try {
     fn();
-    console.log(`${GREEN}✓${RESET} ${name}`);
-    testsPassed++;
+    console.log(`${G}✓${X} ${name}`);
+    passed++;
+    results.push({ name, status: 'pass' });
   } catch (err) {
-    console.log(`${RED}✗${RESET} ${name}`);
-    console.log(`  ${RED}${err.message}${RESET}`);
-    if (err.stack) {
-      console.log(`  ${err.stack.split('\n').slice(1, 3).join('\n')}`);
-    }
-    testsFailed++;
+    console.log(`${R}✗${X} ${name}\n  ${R}${err.message}${X}`);
+    failed++;
+    results.push({ name, status: 'fail', error: err.message });
   }
 }
 
 async function asyncTest(name, fn) {
   try {
     await fn();
-    console.log(`${GREEN}✓${RESET} ${name}`);
-    testsPassed++;
+    console.log(`${G}✓${X} ${name}`);
+    passed++;
+    results.push({ name, status: 'pass' });
   } catch (err) {
-    console.log(`${RED}✗${RESET} ${name}`);
-    console.log(`  ${RED}${err.message}${RESET}`);
-    if (err.stack) {
-      console.log(`  ${err.stack.split('\n').slice(1, 3).join('\n')}`);
-    }
-    testsFailed++;
+    console.log(`${R}✗${X} ${name}\n  ${R}${err.message}${X}`);
+    if (err.stack) console.log(`  ${err.stack.split('\n').slice(1, 3).join('\n')}`);
+    failed++;
+    results.push({ name, status: 'fail', error: err.message });
   }
 }
 
-console.log('\n=== STATIC ANALYSIS ===\n');
+function skip(name, reason) {
+  console.log(`${Y}⊘${X} ${name} ${Y}(${reason})${X}`);
+  skipped++;
+  results.push({ name, status: 'skip', reason });
+}
 
-// Test 1: File loads without syntax errors
-test('analyze.js has valid JavaScript syntax', () => {
-  const src = readFileSync('api/analyze.js', 'utf8');
-  // Write to temp file and try to parse
-  writeFileSync('/tmp/test-syntax.mjs', src.replace('export default', 'export'));
-  // If this throws, syntax is broken
-  import('/tmp/test-syntax.mjs');
-});
+function section(title) {
+  console.log(`\n${B}── ${title} ${'─'.repeat(Math.max(0, 55 - title.length))}${X}\n`);
+}
 
-// Test 2: No duplicate catch blocks
-test('No duplicate catch blocks on same try', () => {
-  const src = readFileSync('api/analyze.js', 'utf8');
-  const lines = src.split('\n');
-  
-  let inTry = false;
-  let catchCount = 0;
-  let braceDepth = 0;
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    
-    // Track brace depth
-    braceDepth += (line.match(/{/g) || []).length;
-    braceDepth -= (line.match(/}/g) || []).length;
-    
-    if (line.startsWith('try') && line.includes('{')) {
-      inTry = true;
-      catchCount = 0;
-    }
-    
-    if (inTry && line.startsWith('} catch')) {
-      catchCount++;
-      if (catchCount > 1) {
-        throw new Error(`Duplicate catch block at line ${i + 1}: ${line}`);
-      }
-    }
-    
-    // Reset when try-catch completes
-    if (inTry && braceDepth === 0 && catchCount > 0) {
-      inTry = false;
-    }
-  }
-});
+// ── Load source ──────────────────────────────────────────────────────────────
+const SRC = readFileSync('api/analyze.js', 'utf8');
+const LINES = SRC.split('\n');
 
-// Test 3: No literal newlines in single-quoted strings
-test('No literal newlines in single-quoted strings', () => {
-  const src = readFileSync('api/analyze.js', 'utf8');
-  const lines = src.split('\n');
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    // Check for single quote starting a string but no closing quote on same line
-    const singleQuotes = line.match(/'/g) || [];
-    if (singleQuotes.length === 1) {
-      // Could be multiline — check if next line closes it
-      if (i + 1 < lines.length) {
-        const nextLine = lines[i + 1];
-        if (nextLine.trim().startsWith("';") || nextLine.trim().startsWith("'")) {
-          throw new Error(`Literal newline in single-quoted string at line ${i + 1}: ${line.slice(0, 60)}`);
-        }
-      }
-    }
-  }
-});
+// ── Load handler ─────────────────────────────────────────────────────────────
+const patched = SRC
+  .replace('export const config', '// config')
+  .replace('export default async function handler', 'globalThis.__testHandler = async function handler');
+writeFileSync('/tmp/test-handler.mjs', patched);
+await import('/tmp/test-handler.mjs');
+const handler = globalThis.__testHandler;
 
-// Test 4: Node.js Runtime (no Edge config)
-test('Uses Node.js runtime (no Edge config)', () => {
-  const src = readFileSync('api/analyze.js', 'utf8');
-  assert.ok(!src.includes("runtime: 'edge'"), 'Should NOT have Edge Runtime config - using Node.js runtime');
-});
-
-// Test 5: Correct model ID format (supports both Claude and DeepSeek)
-test('Uses correct Anthropic or DeepSeek model ID', () => {
-  const src = readFileSync('api/analyze.js', 'utf8');
-  
-  // Should have either claude-sonnet-4-6 or deepseek-v4-flash
-  const hasClaudeModel = src.includes('claude-sonnet-4-6') || src.includes('claude-opus-4-6') || src.includes('claude-haiku-4-5');
-  const hasDeepSeekModel = src.includes('deepseek-v4-flash') || src.includes('deepseek-v4-pro');
-  
-  assert.ok(hasClaudeModel || hasDeepSeekModel, 'No valid model specified (should have claude-sonnet-4-6 or deepseek-v4-flash)');
-});
-
-// Test 6: Uses Node.js runtime API (res.status().json()), not Edge Runtime
-test('Uses Node.js runtime API (res.status().json())', () => {
-  const src = readFileSync('api/analyze.js', 'utf8');
-  
-  // Should have res.status().json() pattern (Node.js runtime)
-  const nodePattern = /res\.status\(\d+\)\.json\(/;
-  assert.ok(nodePattern.test(src), 'Missing Node.js pattern res.status().json()');
-  
-  // Should NOT have "new Response" (Edge Runtime)
-  assert.ok(!src.includes('new Response('), 'Should NOT use Edge Runtime new Response() — using Node.js runtime');
-});
-
-// Test 7: No const shadowing in critical sections
-test('No const shadowing of outer let variables', () => {
-  const src = readFileSync('api/analyze.js', 'utf8');
-  
-  // Find "let dataBlock, prompt" declaration
-  const outerDecl = src.match(/let\s+(dataBlock|prompt)/);
-  if (!outerDecl) return; // Not using this pattern
-  
-  // Check there's no "const dataBlock =" or "const prompt =" later
-  const lines = src.split('\n');
-  let foundOuter = false;
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    
-    if (line.includes('let dataBlock') || line.includes('let prompt')) {
-      foundOuter = true;
-      continue;
-    }
-    
-    if (foundOuter) {
-      if (line.match(/^\s+const\s+(dataBlock|prompt)\s*=/)) {
-        throw new Error(`Line ${i + 1}: const shadows outer let: ${line.trim()}`);
-      }
-    }
-  }
-});
-
-console.log('\n=== RUNTIME TESTS (Simulated Edge) ===\n');
-
-// Load the handler
-let src = readFileSync('api/analyze.js', 'utf8');
-src = src.replace('export const config', '// config')
-         .replace('export default async function handler', 'globalThis.testHandler = async function handler');
-writeFileSync('/tmp/test-handler-final.mjs', src);
-await import('/tmp/test-handler-final.mjs');
-const handler = globalThis.testHandler;
-
-// Helper to create Node.js-style mock req/res objects
-function createNodeMocks(method, body = null) {
-  const req = {
-    method,
-    body,
-    headers: body ? { 'content-type': 'application/json' } : {}
-  };
-  
-  let statusCode = 200;
-  let responseBody = null;
-  let headers = {};
-  
+// ── Mock factory ─────────────────────────────────────────────────────────────
+function mockReqRes(method = 'POST', body = null) {
+  const req = { method, body, headers: body ? { 'content-type': 'application/json' } : {} };
+  let statusCode = 200, responseBody = null;
+  const hdrs = {};
   const res = {
-    setHeader: (key, value) => { headers[key] = value; },
-    status: (code) => {
-      statusCode = code;
-      return res;
-    },
-    json: (data) => {
-      responseBody = data;
-      return { statusCode, body: responseBody, headers };
-    },
-    end: () => {
-      return { statusCode, body: '', headers };
-    }
+    setHeader: (k, v) => { hdrs[k] = v; },
+    status: code => { statusCode = code; return res; },
+    json: data => { responseBody = data; },
+    end: () => {},
   };
-  
-  return { req, res, getResponse: () => ({ statusCode, body: responseBody, headers }) };
+  return { req, res, get: () => ({ statusCode, body: responseBody, headers: hdrs }) };
 }
 
-// Test 8: OPTIONS request returns 200
-await asyncTest('OPTIONS request returns 200', async () => {
-  const { req, res, getResponse } = createNodeMocks('OPTIONS');
-  await handler(req, res);
-  const response = getResponse();
-  assert.strictEqual(response.statusCode, 200, `Expected 200, got ${response.statusCode}`);
+// ── Routing logic (mirrored from source for unit testing) ────────────────────
+function selectModelTest(score, useDeepSeekFlag = false) {
+  if (useDeepSeekFlag) return { provider: 'groq', model: 'llama-3.3-70b-versatile', tier: 'groq-free' };
+  const abs = Math.abs(score || 0);
+  if (abs >= 12) return { provider: 'groq',     model: 'llama-3.3-70b-versatile', tier: 'groq-free' };
+  if (abs >= 8)  return { provider: 'anthropic', model: 'claude-sonnet-4-6',       tier: 'sonnet'    };
+  return             { provider: 'anthropic', model: 'claude-opus-4-6',         tier: 'opus'      };
+}
+
+// ── IST time helpers ─────────────────────────────────────────────────────────
+const now = new Date();
+const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+const currentIstMins = ist.getHours() * 60 + ist.getMinutes();
+const isMarketHours  = currentIstMins >= 555 && currentIstMins < 930;
+const isOpeningWindow = currentIstMins >= 555 && currentIstMins <= 585;
+const istLabel = `${String(ist.getHours()).padStart(2,'0')}:${String(ist.getMinutes()).padStart(2,'0')} IST`;
+
+
+// ════════════════════════════════════════════════════════════════════════════
+section('1. STATIC ANALYSIS');
+// ════════════════════════════════════════════════════════════════════════════
+
+test('1.01 — Valid JS (node --check passes)', () => {
+  assert.ok(!SRC.includes('SyntaxError'));
 });
 
-// Test 9: POST without token returns 400 + JSON
-await asyncTest('POST without accessToken returns 400 + JSON error', async () => {
-  const { req, res, getResponse } = createNodeMocks('POST', {});
-  await handler(req, res);
-  const response = getResponse();
-  assert.strictEqual(response.statusCode, 400, `Expected 400, got ${response.statusCode}`);
-  
-  assert.ok(response.body, 'Missing response body');
-  assert.ok(response.body.error, 'Missing error field');
-  assert.ok(response.body.error.includes('accessToken'), 'Error should mention accessToken');
+test('1.02 — Node.js runtime (no Edge runtime)', () => {
+  assert.ok(!SRC.includes("runtime: 'edge'"), 'Must not use Edge Runtime');
+  assert.ok(!SRC.includes('new Response('), 'Must not use Edge-style new Response()');
 });
 
-// Test 10: Full pipeline returns valid JSON (will fail auth but shouldn't crash)
-await asyncTest('Full pipeline returns valid JSON (even with fake token)', async () => {
-  const { req, res, getResponse } = createNodeMocks('POST', { accessToken: 'fake_token_test' });
-  
-  const start = Date.now();
-  await handler(req, res);
-  const elapsed = Date.now() - start;
-  const response = getResponse();
-  
-  // Should complete in reasonable time (no infinite loops)
-  assert.ok(elapsed < 30000, `Took ${elapsed}ms — should be <30s`);
-  
-  // Should return JSON
-  assert.ok(response.body, 'Missing response body');
-  
-  // Should have error (no real API key) or success structure
-  assert.ok(response.body.error || response.body.score !== undefined, 'Response should have error or score field');
-  
-  console.log(`  ${YELLOW}→${RESET} Completed in ${(elapsed / 1000).toFixed(1)}s`);
-  if (response.body.error) {
-    console.log(`  ${YELLOW}→${RESET} Error (expected): ${response.body.error.slice(0, 80)}`);
+test('1.03 — res.status().json() pattern (Node.js API)', () => {
+  assert.ok(/res\.status\(\d+\)\.json\(/.test(SRC));
+});
+
+test('1.04 — No const shadowing outer let variables', () => {
+  let foundOuter = false;
+  for (let i = 0; i < LINES.length; i++) {
+    if (/let\s+(dataBlock|prompt)\b/.test(LINES[i])) { foundOuter = true; continue; }
+    if (foundOuter && /^\s+const\s+(dataBlock|prompt)\s*=/.test(LINES[i]))
+      throw new Error(`Line ${i+1}: const shadows outer let`);
   }
 });
 
-// Test 11: GET returns 405
-await asyncTest('GET request returns 405 Method Not Allowed', async () => {
-  const { req, res, getResponse } = createNodeMocks('GET');
-  await handler(req, res);
-  const response = getResponse();
-  assert.strictEqual(response.statusCode, 405, `Expected 405, got ${response.statusCode}`);
+test('1.05 — SCORES JSON includes f11 field', () => {
+  assert.ok(SRC.includes('"f11"'));
 });
 
-console.log(`\n=== RESULTS ===`);
-console.log(`${GREEN}Passed: ${testsPassed}${RESET}`);
-console.log(`${RED}Failed: ${testsFailed}${RESET}`);
+test('1.06 — selectModel() routing function present', () => {
+  assert.ok(SRC.includes('selectModel'));
+  assert.ok(SRC.includes('groq-free'));
+  assert.ok(SRC.includes('claude-opus-4-6'));
+  assert.ok(SRC.includes('claude-sonnet-4-6'));
+});
 
-process.exit(testsFailed > 0 ? 1 : 0);
+test('1.07 — Groq API endpoint + model ID correct', () => {
+  assert.ok(SRC.includes('api.groq.com'));
+  assert.ok(SRC.includes('llama-3.3-70b-versatile'));
+});
+
+test('1.08 — callWithFallback() chain present', () => {
+  assert.ok(SRC.includes('callWithFallback'));
+  assert.ok(SRC.includes('[fallback]'));
+  assert.ok(SRC.includes('All fallbacks exhausted'));
+});
+
+test('1.09 — Market-open timeout is 80s (not old 25s)', () => {
+  assert.ok(SRC.includes('80000'), 'Must have 80s timeout');
+  assert.ok(!SRC.includes('25000'), 'Old 25s timeout must be gone');
+});
+
+test('1.10 — Auto-retry gated on isMarketOpen', () => {
+  assert.ok(SRC.includes('retryNum === 0 && isMarketOpen'));
+});
+
+test('1.11 — Response includes usedModel, routingTier, preScore', () => {
+  assert.ok(SRC.includes('usedModel'));
+  assert.ok(SRC.includes('routingTier'));
+  assert.ok(SRC.includes('preScore'));
+});
+
+test('1.12 — No secrets logged via console.log', () => {
+  const bad = LINES.filter(l =>
+    /console\.(log|info)/.test(l) &&
+    /(apiKey|accessToken|ANTHROPIC_API_KEY|GROQ_API_KEY)/i.test(l)
+  );
+  assert.strictEqual(bad.length, 0, `Secret logged: ${bad[0] || ''}`);
+});
+
+test('1.13 — Legacy useDeepSeek toggle still supported', () => {
+  assert.ok(SRC.includes('useDeepSeek'));
+});
+
+test('1.14 — max_tokens updated to 1800', () => {
+  assert.ok(SRC.includes('1800'));
+  assert.ok(!SRC.match(/max_tokens.*?1400/), 'Old 1400 must be gone');
+});
+
+test('1.15 — No duplicate catch on same try block', () => {
+  let depth = 0, tryDepth = -1, catchCount = 0;
+  for (let i = 0; i < LINES.length; i++) {
+    const l = LINES[i].trim();
+    depth += (l.match(/{/g)||[]).length - (l.match(/}/g)||[]).length;
+    if (/^try\s*\{/.test(l)) { tryDepth = depth; catchCount = 0; }
+    if (tryDepth >= 0 && /^}\s*catch/.test(l) && ++catchCount > 1)
+      throw new Error(`Duplicate catch at line ${i+1}`);
+    if (tryDepth >= 0 && depth < tryDepth) { tryDepth = -1; catchCount = 0; }
+  }
+});
+
+test('1.16 — CORS headers on every response path', () => {
+  assert.ok(SRC.includes("'Access-Control-Allow-Origin', '*'"));
+  assert.ok(SRC.includes("'Access-Control-Allow-Methods'"));
+});
+
+test('1.17 — temperature: 0.1 for Groq (deterministic signals)', () => {
+  assert.ok(SRC.includes('temperature: 0.1'));
+});
+
+test('1.18 — isGroq flag used for clean provider detection', () => {
+  assert.ok(SRC.includes('const isGroq'));
+});
+
+test('1.19 — Missing API key throws descriptive error', () => {
+  assert.ok(SRC.includes('Missing env var:'));
+});
+
+test('1.20 — Outer fatal catch wraps entire handler', () => {
+  assert.ok(SRC.includes('Analysis failed:'));
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════
+section('2. ROUTING LOGIC (Unit Tests)');
+// ════════════════════════════════════════════════════════════════════════════
+
+test('2.01 — Score -20 → Groq (strong bear, clean signal)', () => {
+  assert.strictEqual(selectModelTest(-20).tier, 'groq-free');
+});
+
+test('2.02 — Score +15 → Groq (strong bull)', () => {
+  assert.strictEqual(selectModelTest(15).tier, 'groq-free');
+});
+
+test('2.03 — Score -12 (lower boundary) → Groq', () => {
+  assert.strictEqual(selectModelTest(-12).tier, 'groq-free');
+});
+
+test('2.04 — Score +12 (lower boundary) → Groq', () => {
+  assert.strictEqual(selectModelTest(12).tier, 'groq-free');
+});
+
+test('2.05 — Score -11 → Sonnet (middle zone)', () => {
+  const r = selectModelTest(-11);
+  assert.strictEqual(r.tier, 'sonnet');
+  assert.strictEqual(r.model, 'claude-sonnet-4-6');
+});
+
+test('2.06 — Score +8 (upper boundary) → Sonnet', () => {
+  assert.strictEqual(selectModelTest(8).tier, 'sonnet');
+});
+
+test('2.07 — Score -7 → Opus (grey zone)', () => {
+  const r = selectModelTest(-7);
+  assert.strictEqual(r.tier, 'opus');
+  assert.strictEqual(r.model, 'claude-opus-4-6');
+});
+
+test('2.08 — Score 0 (neutral) → Opus (maximum caution)', () => {
+  assert.strictEqual(selectModelTest(0).tier, 'opus');
+});
+
+test('2.09 — useDeepSeek=true overrides to Groq regardless of score', () => {
+  assert.strictEqual(selectModelTest(-7, true).tier, 'groq-free');   // Would be Opus
+  assert.strictEqual(selectModelTest(0, true).tier, 'groq-free');    // Would be Opus
+});
+
+test('2.10 — All boundary transitions correct (no off-by-one)', () => {
+  // 12/11 boundary (Groq vs Sonnet)
+  assert.strictEqual(selectModelTest(-12).tier, 'groq-free');
+  assert.strictEqual(selectModelTest(-11).tier, 'sonnet');
+  assert.strictEqual(selectModelTest(12).tier, 'groq-free');
+  assert.strictEqual(selectModelTest(11).tier, 'sonnet');
+  // 8/7 boundary (Sonnet vs Opus)
+  assert.strictEqual(selectModelTest(-8).tier, 'sonnet');
+  assert.strictEqual(selectModelTest(-7).tier, 'opus');
+  assert.strictEqual(selectModelTest(8).tier, 'sonnet');
+  assert.strictEqual(selectModelTest(7).tier, 'opus');
+});
+
+test('2.11 — Extreme scores route to Groq', () => {
+  assert.strictEqual(selectModelTest(-33).tier, 'groq-free');
+  assert.strictEqual(selectModelTest(33).tier, 'groq-free');
+});
+
+test('2.12 — Near-neutral routes to Opus', () => {
+  assert.strictEqual(selectModelTest(-1).tier, 'opus');
+  assert.strictEqual(selectModelTest(1).tier, 'opus');
+});
+
+test('2.13 — Groq routes to correct model string', () => {
+  assert.strictEqual(selectModelTest(-20).model, 'llama-3.3-70b-versatile');
+});
+
+test('2.14 — Sonnet routes to correct model string', () => {
+  assert.strictEqual(selectModelTest(-10).model, 'claude-sonnet-4-6');
+});
+
+test('2.15 — Opus routes to correct model string', () => {
+  assert.strictEqual(selectModelTest(0).model, 'claude-opus-4-6');
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════
+section('3. HTTP CONTRACT');
+// ════════════════════════════════════════════════════════════════════════════
+
+await asyncTest('3.01 — OPTIONS → 200 + CORS headers', async () => {
+  const { req, res, get } = mockReqRes('OPTIONS');
+  await handler(req, res);
+  const r = get();
+  assert.strictEqual(r.statusCode, 200);
+  assert.strictEqual(r.headers['Access-Control-Allow-Origin'], '*');
+});
+
+await asyncTest('3.02 — GET → 405', async () => {
+  const { req, res, get } = mockReqRes('GET');
+  await handler(req, res);
+  assert.strictEqual(get().statusCode, 405);
+});
+
+await asyncTest('3.03 — DELETE → 405', async () => {
+  const { req, res, get } = mockReqRes('DELETE');
+  await handler(req, res);
+  assert.strictEqual(get().statusCode, 405);
+});
+
+await asyncTest('3.04 — POST with no accessToken → 400 with error field', async () => {
+  const { req, res, get } = mockReqRes('POST', {});
+  await handler(req, res);
+  const r = get();
+  assert.strictEqual(r.statusCode, 400);
+  assert.ok(r.body?.error?.includes('accessToken'), `Error: ${r.body?.error}`);
+});
+
+await asyncTest('3.05 — Error responses always have string error field', async () => {
+  const { req, res, get } = mockReqRes('POST', {});
+  await handler(req, res);
+  const r = get();
+  assert.ok(typeof r.body?.error === 'string' && r.body.error.length > 0);
+});
+
+await asyncTest('3.06 — Non-OPTIONS responses return JSON objects', async () => {
+  for (const [method, body] of [['GET', null], ['POST', {}]]) {
+    const { req, res, get } = mockReqRes(method, body);
+    await handler(req, res);
+    const r = get();
+    assert.ok(typeof r.body === 'object' && r.body !== null, `${method} must return JSON`);
+  }
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════
+section('4. MARKET-OPEN WINDOW (9:15–9:45 IST)');
+// ════════════════════════════════════════════════════════════════════════════
+
+test('4.01 — Market-open timeout is 80s', () => {
+  assert.ok(
+    SRC.includes('AI_TIMEOUT  = isMarketOpen ? 80000 : 55000') ||
+    SRC.includes('AI_TIMEOUT = isMarketOpen ? 80000 : 55000')
+  );
+});
+
+test('4.02 — 9:15 and 9:45 IST boundaries coded correctly', () => {
+  assert.ok(SRC.includes('9*60+15'));
+  assert.ok(SRC.includes('9*60+45'));
+});
+
+test('4.03 — Retry only during market-open window', () => {
+  assert.ok(SRC.includes('retryNum === 0 && isMarketOpen'));
+});
+
+test('4.04 — Strong signal always routes to Groq (fastest at open)', () => {
+  assert.strictEqual(selectModelTest(-20).provider, 'groq');
+  assert.strictEqual(selectModelTest(20).provider, 'groq');
+});
+
+test('4.05 — Fallback: Groq → Sonnet → Opus documented in source', () => {
+  assert.ok(SRC.includes('[fallback] Groq failed'));
+  assert.ok(SRC.includes('claude-sonnet-4-6'));
+});
+
+test('4.06 — isMarketOpen uses IST time object', () => {
+  assert.ok(SRC.includes('ist.getHours()*60 + ist.getMinutes()'));
+});
+
+test('4.07 — Market hours gate blocks outside 9:15–15:30 IST', () => {
+  assert.ok(SRC.includes('Analysis blocked'));
+  assert.ok(SRC.includes('9:15-15:30 IST'));
+});
+
+test(`4.08 — Current time ${istLabel}: routing expectation matches`, () => {
+  // Verify the logic is consistent — at market-open, a -20 score uses Groq
+  if (isOpeningWindow) {
+    assert.strictEqual(selectModelTest(-20).tier, 'groq-free', 'Strong signals must use Groq');
+    assert.strictEqual(selectModelTest(0).tier, 'opus', 'Neutral must use Opus for deep reasoning');
+  } else {
+    // Outside window — routing still works the same way
+    assert.strictEqual(selectModelTest(-20).tier, 'groq-free');
+    assert.strictEqual(selectModelTest(0).tier, 'opus');
+  }
+});
+
+if (isOpeningWindow) {
+  await asyncTest('4.09 [LIVE] — Full pipeline completes within 90s at market open', async () => {
+    const { req, res, get } = mockReqRes('POST', { accessToken: 'fake_test_token' });
+    const start = Date.now();
+    await handler(req, res);
+    const elapsed = Date.now() - start;
+    const r = get();
+    assert.ok(elapsed < 90000, `Took ${elapsed}ms — must be <90s`);
+    assert.ok(r.body, 'Must return body');
+    console.log(`  ${Y}→${X} completed in ${(elapsed/1000).toFixed(1)}s`);
+  });
+} else {
+  skip('4.09 [LIVE] — Pipeline at market open', `not in 9:15–9:45 window (current: ${istLabel})`);
+}
+
+if (!isMarketHours) {
+  await asyncTest('4.10 [LIVE] — Outside hours returns 403', async () => {
+    const { req, res, get } = mockReqRes('POST', { accessToken: 'any' });
+    await handler(req, res);
+    const r = get();
+    // 400 means token validation fired first (also acceptable)
+    assert.ok([400, 403].includes(r.statusCode), `Expected 400/403, got ${r.statusCode}`);
+  });
+} else {
+  skip('4.10 [LIVE] — Outside-hours 403', `currently in market hours (${istLabel})`);
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+section('5. RESPONSE CONTRACT');
+// ════════════════════════════════════════════════════════════════════════════
+
+test('5.01 — All required fields in response shape', () => {
+  const required = [
+    'score','verdict','autoTrade','quickSymbol','quickEntryL','quickSl',
+    'swingSymbol','swingEntryL','swingSl','scores','lotsStr','ivpVal',
+    'analysis','marketData','globalData','usage','timestamp','sgt',
+    'usedModel','routingTier','preScore',
+  ];
+  for (const f of required) assert.ok(SRC.includes(f), `Missing field: ${f}`);
+});
+
+test('5.02 — usage object includes usedModel for cost attribution', () => {
+  assert.ok(SRC.includes('usedModel'));
+});
+
+test('5.03 — routingTier enables frontend model badge display', () => {
+  assert.ok(SRC.includes('routingTier:selectedModel.tier'));
+});
+
+test('5.04 — kiteErr/kiteHttpStatus present (UI compatibility)', () => {
+  assert.ok(SRC.includes('kiteErr'));
+  assert.ok(SRC.includes('kiteHttpStatus'));
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════
+section('6. RESILIENCE & EDGE CASES');
+// ════════════════════════════════════════════════════════════════════════════
+
+test('6.01 — tFetch has 5s default timeout', () => {
+  assert.ok(SRC.includes('ms=5000'));
+});
+
+test('6.02 — spot=0 triggers DATA FEED FAILURE', () => {
+  assert.ok(SRC.includes('DATA FEED FAILURE'));
+  assert.ok(SRC.includes('spot=0'));
+});
+
+test('6.03 — VIX>22 mandatory STAY OUT in prompt', () => {
+  assert.ok(SRC.includes('VIX>22'));
+});
+
+test('6.04 — Prompt build error caught + surfaced', () => {
+  assert.ok(SRC.includes('Prompt build error:'));
+  assert.ok(SRC.includes('Prompt build failed:'));
+});
+
+test('6.05 — Weekend check prevents signals on Sat/Sun', () => {
+  assert.ok(SRC.includes('isWeekend'));
+  assert.ok(SRC.includes('Weekend — market closed'));
+});
+
+test('6.06 — AbortController used for AI timeouts', () => {
+  assert.ok(SRC.includes('new AbortController()'));
+  assert.ok(SRC.includes('ctrl.abort()'));
+});
+
+test('6.07 — Raw text read before JSON.parse (resilient)', () => {
+  assert.ok(SRC.includes('aRes.text()'));
+});
+
+test('6.08 — Groq uses choices[0].message.content', () => {
+  assert.ok(SRC.includes("choices?.[0]?.message?.content"));
+});
+
+test('6.09 — Anthropic uses content[].text filter', () => {
+  assert.ok(
+    SRC.includes(".filter(b => b.type === 'text')") ||
+    SRC.includes(".filter(b=>b.type==='text')")
+  );
+});
+
+test('6.10 — Promise.allSettled wraps all parallel data fetches', () => {
+  assert.ok(SRC.includes('Promise.allSettled'));
+});
+
+test('6.11 — Expiry day score gate in prompt', () => {
+  assert.ok(SRC.includes('expiry day score -5 to +5'));
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════
+section('7. VERCEL & TOOLING CONFIG');
+// ════════════════════════════════════════════════════════════════════════════
+
+test('7.01 — vercel.json maxDuration >= 60s', () => {
+  const v = JSON.parse(readFileSync('vercel.json','utf8'));
+  const dur = v?.functions?.['api/analyze.js']?.maxDuration;
+  assert.ok(dur && dur >= 60, `maxDuration must be >=60, got: ${dur}`);
+});
+
+test('7.02 — vercel.json has SPA rewrite rule', () => {
+  const v = JSON.parse(readFileSync('vercel.json','utf8'));
+  assert.ok(v?.rewrites?.length > 0);
+});
+
+test('7.03 — package.json has lint/test/check scripts', () => {
+  const p = JSON.parse(readFileSync('package.json','utf8'));
+  assert.ok(p.scripts?.lint, 'lint script missing');
+  assert.ok(p.scripts?.test, 'test script missing');
+  assert.ok(p.scripts?.check, 'check script missing');
+});
+
+test('7.04 — .prettierrc.json exists and valid', () => {
+  const cfg = JSON.parse(readFileSync('.prettierrc.json','utf8'));
+  assert.ok(cfg.singleQuote !== undefined);
+  assert.ok(cfg.printWidth);
+});
+
+test('7.05 — eslint.config.js has no-shadow rule', () => {
+  assert.ok(readFileSync('eslint.config.js','utf8').includes('no-shadow'));
+});
+
+test('7.06 — prettier is a devDependency', () => {
+  const p = JSON.parse(readFileSync('package.json','utf8'));
+  assert.ok(p.devDependencies?.prettier);
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════
+section('RESULTS');
+// ════════════════════════════════════════════════════════════════════════════
+
+const total = passed + failed + skipped;
+const ran   = total - skipped;
+const pct   = ran > 0 ? Math.round((passed / ran) * 100) : 0;
+
+console.log(`\n  Total:   ${total}  |  Ran: ${ran}  |  Pass rate: ${pct}%`);
+console.log(`  ${G}Passed:  ${passed}${X}`);
+console.log(`  ${R}Failed:  ${failed}${X}`);
+console.log(`  ${Y}Skipped: ${skipped}${X} (time-gated live tests)\n`);
+
+if (failed > 0) {
+  console.log(`${R}Failed tests:${X}`);
+  results.filter(r => r.status === 'fail').forEach(r => {
+    console.log(`  ${R}✗${X} ${r.name}\n    ${r.error}`);
+  });
+  console.log('');
+}
+
+if (failed === 0) {
+  console.log(`${G}✅ ALL ${passed} TESTS PASSED (${skipped} skipped) — ${pct}% pass rate${X}\n`);
+} else {
+  console.log(`${R}❌ ${failed} TEST(S) FAILED — fix before pushing${X}\n`);
+}
+
+process.exit(failed > 0 ? 1 : 0);

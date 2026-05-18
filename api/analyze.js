@@ -435,96 +435,142 @@ AUTO-TRADE: [YES - CE/PE / NO]
     console.error('Prompt build error:', promptErr.message);
     return res.status(500).json({error: 'Prompt build failed: ' + promptErr.message});
   }
-  // ── AI API call with retry ────────────────────────────────────────────────
-  // Market-open (9:15–9:45 IST) is high-traffic — use longer timeout + 1 retry
+  // ── Smart model routing ───────────────────────────────────────────────────
+  // Market-open window (9:15–9:45 IST): busiest period — needs longer timeouts + retry
   const istMinsNow = ist.getHours()*60 + ist.getMinutes();
   const isMarketOpen = istMinsNow >= 9*60+15 && istMinsNow <= 9*60+45;
-  const AI_TIMEOUT = isMarketOpen ? 80000 : 55000; // 80s at open, 55s otherwise
+  const AI_TIMEOUT  = isMarketOpen ? 80000 : 55000; // 80s at open, 55s otherwise
 
-  async function callAI(retryNum=0) {
-    const apiUrl = useDeepSeek
-      ? 'https://openrouter.ai/api/v1/chat/completions'
+  // Score-based model routing:
+  //   |score| >= 12  → Groq Llama 3.3 70B (free, clean signal, no reasoning needed)
+  //   |score| 8–11   → Claude Sonnet 4.6  (middle ground)
+  //   |score| <= 7   → Claude Opus 4.6    (grey zone, deep reasoning required)
+  // useDeepSeek toggle overrides routing (legacy UI support)
+  function selectModel(compositeScore) {
+    if (useDeepSeek) return { provider: 'groq', model: 'llama-3.3-70b-versatile', tier: 'groq-free' };
+    const abs = Math.abs(compositeScore || 0);
+    if (abs >= 12) return { provider: 'groq',      model: 'llama-3.3-70b-versatile', tier: 'groq-free'   };
+    if (abs >= 8)  return { provider: 'anthropic',  model: 'claude-sonnet-4-6',       tier: 'sonnet'      };
+    return             { provider: 'anthropic',  model: 'claude-opus-4-6',         tier: 'opus'        };
+  }
+
+  // Pre-score from parsed SCORES block if available (first pass — use 0 if not yet known)
+  // We do a lightweight pre-parse to get the score before routing
+  let preScore = 0;
+  try {
+    const preSm = prompt.match(/(?:TOTAL|total):\s*([+-]?\d+)/);
+    if (preSm) preScore = parseInt(preSm[1]);
+  } catch { /* ignore — score unknown at routing time, defaults to Opus */ }
+
+  const selectedModel = selectModel(preScore);
+  console.log(`[routing] score=${preScore} abs=${Math.abs(preScore)} → ${selectedModel.tier} (${selectedModel.model})`);
+
+  // ── Unified AI fetch (Groq uses OpenAI-compat, Anthropic uses native) ────
+  async function callProvider(provider, model, retryNum=0) {
+    const isGroq      = provider === 'groq';
+    const isAnthropicP = provider === 'anthropic';
+
+    const apiUrl = isGroq
+      ? 'https://api.groq.com/openai/v1/chat/completions'
       : 'https://api.anthropic.com/v1/messages';
-    const aiApiKey = useDeepSeek
-      ? process.env.OPENROUTER_API_KEY
-      : process.env.ANTHROPIC_API_KEY;
-    const headers = useDeepSeek
-      ? {'Authorization': `Bearer ${aiApiKey}`, 'Content-Type': 'application/json'}
-      : {'x-api-key': aiApiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'};
 
-    const aCtrl = new AbortController();
-    const aTid  = setTimeout(() => aCtrl.abort(), AI_TIMEOUT);
+    const apiKey = isGroq
+      ? process.env.GROQ_API_KEY
+      : process.env.ANTHROPIC_API_KEY;
+
+    if (!apiKey) throw new Error(`Missing env var: ${isGroq ? 'GROQ_API_KEY' : 'ANTHROPIC_API_KEY'}`);
+
+    const headers = isGroq
+      ? { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
+      : { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' };
+
+    const bodyObj = isGroq
+      ? { model, max_tokens: 1800, temperature: 0.1, messages: [{ role: 'user', content: prompt }] }
+      : { model, max_tokens: 1800, messages: [{ role: 'user', content: prompt }] };
+
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), AI_TIMEOUT);
     try {
-      const aRes = await fetch(apiUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model: useDeepSeek ? 'deepseek/deepseek-v4-flash:free' : 'claude-sonnet-4-6',
-          max_tokens: useDeepSeek ? 2000 : 1400,
-          messages: [{role:'user', content:prompt}]
-        }),
-        signal: aCtrl.signal,
-      });
-      clearTimeout(aTid);
-      const aText = await aRes.text();
-      const aData = JSON.parse(aText);
-      if(!aRes.ok) throw new Error(aData?.error?.message || `API HTTP ${aRes.status}`);
-      return aData;
+      const aRes = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(bodyObj), signal: ctrl.signal });
+      clearTimeout(tid);
+      const raw  = await aRes.text();
+      const data = JSON.parse(raw);
+      if (!aRes.ok) throw new Error(data?.error?.message || `${provider} HTTP ${aRes.status}`);
+
+      // Extract text from provider-specific response format
+      let text = '', inp = 0, out = 0;
+      if (isGroq || isAnthropicP && data.choices) {
+        // OpenAI-compat format (Groq)
+        text = data?.choices?.[0]?.message?.content || '';
+        inp  = data?.usage?.prompt_tokens || 0;
+        out  = data?.usage?.completion_tokens || 0;
+      } else {
+        // Anthropic native format
+        text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+        inp  = data.usage?.input_tokens || 0;
+        out  = data.usage?.output_tokens || 0;
+      }
+      return { text, inp, out, provider, model };
     } catch(e) {
-      clearTimeout(aTid);
+      clearTimeout(tid);
+      const isAbortErr = e.name === 'AbortError' || e.message?.includes('abort');
       // Retry once on timeout during market-open window
-      if((e.name==='AbortError'||e.message?.includes('abort')) && retryNum===0 && isMarketOpen) {
-        console.warn('AI timeout on attempt 1, retrying...');
-        return callAI(1);
+      if (isAbortErr && retryNum === 0 && isMarketOpen) {
+        console.warn(`[${provider}] timeout attempt 1 — retrying...`);
+        return callProvider(provider, model, 1);
       }
       throw e;
     }
   }
 
-  let analysisText='', inputTokens=0, outputTokens=0;  // eslint-disable-line no-useless-assignment
-  try {
-    const aData = await callAI();
+  // ── Fallback chain: primary → Sonnet → Opus ──────────────────────────────
+  async function callWithFallback() {
+    const primary = selectedModel;
 
-    // Extract text — handles both Anthropic format and DeepSeek/OpenAI format
-    if(useDeepSeek) {
-      // OpenAI-compatible format: choices[0].message.content
-      analysisText = aData?.choices?.[0]?.message?.content || '';
-      inputTokens  = aData?.usage?.prompt_tokens || 0;
-      outputTokens = aData?.usage?.completion_tokens || 0;
-      // DeepSeek free tier often rate-limits with a 200 + empty choices or error field
-      if(!analysisText) {
-        const dsErr = aData?.error?.message || aData?.choices?.[0]?.finish_reason || 'rate_limit';
-        console.warn('DeepSeek empty response, fallback to Claude. Reason:', dsErr, JSON.stringify(aData).slice(0,300));
-        // Auto-fallback: call Claude instead
-        const fbCtrl = new AbortController();
-        const fbTid  = setTimeout(() => fbCtrl.abort(), AI_TIMEOUT);
-        const fbRes  = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: {'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
-          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1800, messages: [{role:'user', content:prompt}] }),
-          signal: fbCtrl.signal,
-        });
-        clearTimeout(fbTid);
-        const fbData = await fbRes.json();
-        if(!fbRes.ok) throw new Error(`DeepSeek rate-limited; Claude fallback also failed: ${fbData?.error?.message}`);
-        analysisText = (fbData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
-        inputTokens  = fbData.usage?.input_tokens || 0;
-        outputTokens = fbData.usage?.output_tokens || 0;
+    try {
+      const result = await callProvider(primary.provider, primary.model);
+      if (!result.text) throw new Error(`${primary.tier} returned empty response`);
+      return result;
+    } catch(primaryErr) {
+      console.warn(`[fallback] ${primary.tier} failed: ${primaryErr.message}`);
+
+      // If primary was Groq → fallback to Sonnet
+      if (primary.provider === 'groq') {
+        try {
+          console.log('[fallback] Groq failed → trying Claude Sonnet 4.6');
+          const result = await callProvider('anthropic', 'claude-sonnet-4-6');
+          if (!result.text) throw new Error('Sonnet fallback also empty');
+          return result;
+        } catch(sonnetErr) {
+          console.warn(`[fallback] Sonnet also failed: ${sonnetErr.message}`);
+        }
       }
-    } else {
-      // Anthropic format: content[].text
-      analysisText = (aData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
-      inputTokens  = aData.usage?.input_tokens || 0;
-      outputTokens = aData.usage?.output_tokens || 0;
+
+      // Final fallback: Sonnet (if primary was Opus) or Opus (if Sonnet was primary)
+      const finalModel = primary.model === 'claude-sonnet-4-6' ? 'claude-opus-4-6' : 'claude-sonnet-4-6';
+      console.log(`[fallback] final attempt → ${finalModel}`);
+      const result = await callProvider('anthropic', finalModel);
+      if (!result.text) throw new Error('All fallbacks exhausted — no AI response');
+      return result;
     }
-    if(!analysisText) throw new Error('Empty AI response — model returned no text');
+  }
+
+  let analysisText = '', inputTokens = 0, outputTokens = 0, usedModel = selectedModel.model;
+  try {
+    const aiResult = await callWithFallback();
+    analysisText = aiResult.text;
+    inputTokens  = aiResult.inp;
+    outputTokens = aiResult.out;
+    usedModel    = aiResult.model;
+    console.log(`[ai] used=${usedModel} in=${inputTokens} out=${outputTokens}`);
+    if (!analysisText) throw new Error('Empty AI response — model returned no text');
   } catch(ae) {
-    const isAbort = ae.name==='AbortError' || ae.message?.toLowerCase().includes('abort');
-    const timeoutSec = Math.round(AI_TIMEOUT/1000);
+    const isAbort = ae.name === 'AbortError' || ae.message?.toLowerCase().includes('abort');
+    const timeoutSec = Math.round(AI_TIMEOUT / 1000);
     const msg = isAbort
       ? `Analysis timed out (${timeoutSec}s). Market too busy — try again in 1–2 min.`
       : ae.message;
-    return res.status(500).json({error:`model: ${msg}`});
+    return res.status(500).json({ error: `model: ${msg}` });
   }
 
   // ── Parse response ────────────────────────────────────────────────────────
@@ -587,7 +633,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
       openPositions:openPos,dataAgeMin,isFresh,nseSrc,advances,declines,
     },
     globalData:G,
-    usage:{inputTokens,outputTokens},
+    usage:{inputTokens,outputTokens,usedModel,routingTier:selectedModel.tier,preScore},
     timestamp:istStr,sgt:sgtStr,
     kiteErr:null,kiteHttpStatus:200,
   });
