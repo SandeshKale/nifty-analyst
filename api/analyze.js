@@ -425,11 +425,14 @@ AUTO-TRADE: [YES - CE/PE / NO]
     console.error('Prompt build error:', promptErr.message);
     return res.status(500).json({error: 'Prompt build failed: ' + promptErr.message});
   }
-  // ── Anthropic API ─────────────────────────────────────────────────────────
-  let analysisText='', inputTokens=0, outputTokens=0;  // eslint-disable-line no-useless-assignment
-  try {
-    const aCtrl=new AbortController(); const aTid=setTimeout(()=>aCtrl.abort(),25000);
-        const apiUrl = useDeepSeek 
+  // ── AI API call with retry ────────────────────────────────────────────────
+  // Market-open (9:15–9:45 IST) is high-traffic — use longer timeout + 1 retry
+  const istMinsNow = ist.getHours()*60 + ist.getMinutes();
+  const isMarketOpen = istMinsNow >= 9*60+15 && istMinsNow <= 9*60+45;
+  const AI_TIMEOUT = isMarketOpen ? 80000 : 55000; // 80s at open, 55s otherwise
+
+  async function callAI(retryNum=0) {
+    const apiUrl = useDeepSeek
       ? 'https://openrouter.ai/api/v1/chat/completions'
       : 'https://api.anthropic.com/v1/messages';
     const aiApiKey = useDeepSeek
@@ -438,29 +441,59 @@ AUTO-TRADE: [YES - CE/PE / NO]
     const headers = useDeepSeek
       ? {'Authorization': `Bearer ${aiApiKey}`, 'Content-Type': 'application/json'}
       : {'x-api-key': aiApiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'};
-    
-    const aRes = await fetch(apiUrl, {
-      method:'POST',
-      headers:headers,
-            body:JSON.stringify({
-        model: useDeepSeek ? 'deepseek-v4-flash' : 'claude-sonnet-4-6',
-        max_tokens: useDeepSeek ? 2000 : 1400,
-        messages:[{role:'user',content:prompt}]
-      }),
-      signal:aCtrl.signal,
-    });
-    clearTimeout(aTid);
-    // Read body — Anthropic non-streaming closes connection after full response,
-    // so aRes.text() resolves in ms. No Promise.race needed (it caused unhandled rejections).
-    const aText = await aRes.text();
-    const aData = JSON.parse(aText);
-    if(!aRes.ok) throw new Error(aData?.error?.message||`Anthropic HTTP ${aRes.status}`);
-    inputTokens  = aData.usage?.input_tokens||0;  // eslint-disable-line no-useless-assignment
-    outputTokens = aData.usage?.output_tokens||0;  // eslint-disable-line no-useless-assignment
-    analysisText = (aData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
-    if(!analysisText) throw new Error('Empty Anthropic response');
+
+    const aCtrl = new AbortController();
+    const aTid  = setTimeout(() => aCtrl.abort(), AI_TIMEOUT);
+    try {
+      const aRes = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: useDeepSeek ? 'deepseek/deepseek-chat-v3-0324:free' : 'claude-sonnet-4-6',
+          max_tokens: useDeepSeek ? 2000 : 1400,
+          messages: [{role:'user', content:prompt}]
+        }),
+        signal: aCtrl.signal,
+      });
+      clearTimeout(aTid);
+      const aText = await aRes.text();
+      const aData = JSON.parse(aText);
+      if(!aRes.ok) throw new Error(aData?.error?.message || `API HTTP ${aRes.status}`);
+      return aData;
+    } catch(e) {
+      clearTimeout(aTid);
+      // Retry once on timeout during market-open window
+      if((e.name==='AbortError'||e.message?.includes('abort')) && retryNum===0 && isMarketOpen) {
+        console.warn('AI timeout on attempt 1, retrying...');
+        return callAI(1);
+      }
+      throw e;
+    }
+  }
+
+  let analysisText='', inputTokens=0, outputTokens=0;  // eslint-disable-line no-useless-assignment
+  try {
+    const aData = await callAI();
+
+    // Extract text — handles both Anthropic format and DeepSeek/OpenAI format
+    if(useDeepSeek) {
+      // OpenAI-compatible format: choices[0].message.content
+      analysisText = aData?.choices?.[0]?.message?.content || '';
+      inputTokens  = aData?.usage?.prompt_tokens || 0;
+      outputTokens = aData?.usage?.completion_tokens || 0;
+    } else {
+      // Anthropic format: content[].text
+      analysisText = (aData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
+      inputTokens  = aData.usage?.input_tokens || 0;
+      outputTokens = aData.usage?.output_tokens || 0;
+    }
+    if(!analysisText) throw new Error('Empty AI response — model returned no text');
   } catch(ae) {
-    const msg = ae.name==='AbortError'?'Analysis timed out (40s). Market too busy — try again.':ae.message;
+    const isAbort = ae.name==='AbortError' || ae.message?.toLowerCase().includes('abort');
+    const timeoutSec = Math.round(AI_TIMEOUT/1000);
+    const msg = isAbort
+      ? `Analysis timed out (${timeoutSec}s). Market too busy — try again in 1–2 min.`
+      : ae.message;
     return res.status(500).json({error:`model: ${msg}`});
   }
 
