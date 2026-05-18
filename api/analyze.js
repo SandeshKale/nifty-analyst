@@ -481,6 +481,26 @@ AUTO-TRADE: [YES - CE/PE / NO]
       analysisText = aData?.choices?.[0]?.message?.content || '';
       inputTokens  = aData?.usage?.prompt_tokens || 0;
       outputTokens = aData?.usage?.completion_tokens || 0;
+      // DeepSeek free tier often rate-limits with a 200 + empty choices or error field
+      if(!analysisText) {
+        const dsErr = aData?.error?.message || aData?.choices?.[0]?.finish_reason || 'rate_limit';
+        console.warn('DeepSeek empty response, fallback to Claude. Reason:', dsErr, JSON.stringify(aData).slice(0,300));
+        // Auto-fallback: call Claude instead
+        const fbCtrl = new AbortController();
+        const fbTid  = setTimeout(() => fbCtrl.abort(), AI_TIMEOUT);
+        const fbRes  = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
+          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1400, messages: [{role:'user', content:prompt}] }),
+          signal: fbCtrl.signal,
+        });
+        clearTimeout(fbTid);
+        const fbData = await fbRes.json();
+        if(!fbRes.ok) throw new Error(`DeepSeek rate-limited; Claude fallback also failed: ${fbData?.error?.message}`);
+        analysisText = (fbData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
+        inputTokens  = fbData.usage?.input_tokens || 0;
+        outputTokens = fbData.usage?.output_tokens || 0;
+      }
     } else {
       // Anthropic format: content[].text
       analysisText = (aData.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
