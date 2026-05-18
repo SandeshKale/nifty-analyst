@@ -404,14 +404,24 @@ ${gLine('Crude',G.crude)} | ${gLine('Gold',G.gold)} | ${gLine('USD/INR',G.usdInr
 POSITIONS: ${posText}
 PENDING ORDERS: ${ordText}
 
-REQUIRED (be concise - max 1500 tokens): ALL 10 factor scores, SCORECARD TOTAL, key levels, DUAL VERDICT boxes. Skip verbose prose.
 MANDATORY STAY OUT if: VIX>22 | spot=0 | expiry day score -5 to +5 | insufficient margin
 
-SCORECARD — output EXACTLY this block (integers only, no spaces around colon):
-SCORES:{"f1":0,"f2":0,"f3":0,"f4":0,"f5":0,"f6":0,"f7":0,"f8":0,"f9":0,"f10":0,"total":0}
+SCORECARD — output EXACTLY this JSON block first (integers only, no spaces around colon):
+SCORES:{"f1":0,"f2":0,"f3":0,"f4":0,"f5":0,"f6":0,"f7":0,"f8":0,"f9":0,"f10":0,"f11":0,"total":0}
 
-Then show human-readable breakdown: F1 VIX (+X): reason | F2 PCR (+X): reason ... etc
-TOTAL: +XX / ±30
+Then ONE LINE per factor — score | raw number that drove it | one-phrase reason. Use this exact format:
+F1  VIX:       [score]  [value +X%]           — [rising/falling, fear read]
+F2  PCR/OI:    [score]  [PCR | Call±Cr vs Put±Cr] — [ceiling/floor interpretation]
+F3  Intraday:  [score]  [spot level, key move] — [pattern: pullback/rejection/breakout]
+F4  Trend:     [score]  [day change %]         — [continuation/reversal]
+F5  Sector:    [score]  [BankNifty%, FinSvc%]  — [confirming/diverging]
+F6  FII:       [score]  [FII net Rs Cr]        — [buying/selling intent]
+F7  Breadth:   [score]  [advance:decline]      — [broad selling/buying/neutral]
+F8  Global:    [score]  [S&P500%, Crude$]      — [tailwind/headwind]
+F9  IV:        [score]  [IVP, ATM IV]          — [risk modifier note]
+F10 Events:    [score]  [event or "none"]      — [impact]
+F11 Sentiment: [score]  [sentiment signal]     — [fear/greed read]
+TOTAL: XX / ±33
 
 VERDICT FORMAT (include both):
 QUICK SETUP (+15-20 premium pts): VERDICT: [ENTRY CE/PE / STAY OUT] | Option: [symbol] | Entry: Rs[X] | SL: Rs[X] | Target: Rs[X]
@@ -491,7 +501,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
         const fbRes  = await fetch('https://api.anthropic.com/v1/messages', {
           method: 'POST',
           headers: {'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
-          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1400, messages: [{role:'user', content:prompt}] }),
+          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1800, messages: [{role:'user', content:prompt}] }),
           signal: fbCtrl.signal,
         });
         clearTimeout(fbTid);
