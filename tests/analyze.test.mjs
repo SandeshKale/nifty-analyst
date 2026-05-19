@@ -536,6 +536,144 @@ test('7.06 — prettier is a devDependency', () => {
 });
 
 
+
+// ════════════════════════════════════════════════════════════════════════════
+section('8. OPP 1 — RULE-BASED PRE-SCORER');
+// ════════════════════════════════════════════════════════════════════════════
+
+// Mirror the pre-scorer from analyze.js for isolated unit testing
+function preScoreTest({vix=16, pcr=1.0, spotVsPrevCl=0, spotVsSma20=0, advRatio=0.5, sp500Pct=0}) {
+  let s = 0;
+  if      (vix > 20)  s -= 2; else if (vix > 17) s -= 1;
+  else if (vix < 14)  s += 2; else if (vix < 16) s += 1;
+  if      (pcr < 0.7)  s -= 2; else if (pcr < 0.85) s -= 1;
+  else if (pcr > 1.4)  s += 2; else if (pcr > 1.2)  s += 1;
+  if      (spotVsPrevCl < -0.5) s -= 2; else if (spotVsPrevCl < -0.1) s -= 1;
+  else if (spotVsPrevCl >  0.5) s += 2; else if (spotVsPrevCl >  0.1) s += 1;
+  if      (spotVsSma20 < -0.5) s -= 2; else if (spotVsSma20 < 0) s -= 1;
+  else if (spotVsSma20 >  0.5) s += 2; else if (spotVsSma20 > 0) s += 1;
+  if      (advRatio < 0.3)  s -= 2; else if (advRatio < 0.45) s -= 1;
+  else if (advRatio > 0.7)  s += 2; else if (advRatio > 0.55) s += 1;
+  if      (sp500Pct < -1.0) s -= 2; else if (sp500Pct < -0.3) s -= 1;
+  else if (sp500Pct >  1.0) s += 2; else if (sp500Pct >  0.3) s += 1;
+  return s;
+}
+
+test('8.01 — Strong bear session (18 May) pre-scores <= -8 (Sonnet or Groq)', () => {
+  // 18 May: VIX 19.76(-1), PCR 0.95(-1), spot-1.05%(-2), below SMA20(-2), breadth 28%(-2), S&P-0.48%(-1) = -9
+  // Pre-scorer uses 6 factors so max |-12| only when all 6 at max (-2 each)
+  const s = preScoreTest({ vix:19.76, pcr:0.95, spotVsPrevCl:-1.05, spotVsSma20:-0.8, advRatio:0.28, sp500Pct:-0.48 });
+  assert.ok(s <= -8, 'Expected <= -8 for strong bear, got ' + s);
+  assert.ok(['groq-free','sonnet'].includes(selectModelTest(s).tier), 'Strong bear must not go to Opus');
+});
+
+test('8.02 — Extreme bull session (all 6 factors max) pre-scores +12, routes to Groq', () => {
+  // All 6 factors at maximum bullish: each contributes +2 → max +12
+  const s = preScoreTest({ vix:12.0, pcr:1.5, spotVsPrevCl:1.5, spotVsSma20:1.0, advRatio:0.85, sp500Pct:1.5 });
+  assert.ok(s >= 12, 'Expected +12 with all factors maxed, got ' + s);
+  assert.strictEqual(selectModelTest(s).tier, 'groq-free');
+});
+
+test('8.03 — Neutral session pre-scores in grey zone, routes to Opus', () => {
+  const s = preScoreTest({ vix:16.5, pcr:1.05, spotVsPrevCl:0.05, spotVsSma20:0.1, advRatio:0.50, sp500Pct:0.1 });
+  assert.ok(Math.abs(s) <= 7, 'Expected |s|<=7, got ' + s);
+  assert.strictEqual(selectModelTest(s).tier, 'opus');
+});
+
+test('8.04 — Pre-scorer uses 6 independent factors', () => {
+  assert.ok(SRC.includes('[pre-score] vix='), 'Pre-scorer logs inputs');
+  assert.ok(SRC.includes('breadthRatio'), 'Breadth factor present');
+  assert.ok(SRC.includes('G.sp500?.pct'), 'Global factor present');
+  assert.ok(SRC.includes('sma20'), 'Trend vs SMA20 factor present');
+});
+
+test('8.05 — Pre-scorer failure falls back to 0 (Opus) safely', () => {
+  assert.ok(SRC.includes('[pre-score] failed:'), 'Error path must log');
+  assert.ok(SRC.includes('preScore = 0;'), 'Error path must reset to 0');
+});
+
+test('8.06 — Routing logs preScore for debugging', () => {
+  assert.ok(SRC.includes('[routing] preScore='), 'Routing must log preScore');
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+section('9. OPP 3 — TWO-WAVE FETCH');
+// ════════════════════════════════════════════════════════════════════════════
+
+test('9.01 — Wave 2 promises fired before wave 1 is awaited', () => {
+  const ocIdx   = SRC.indexOf('const ocPromise');
+  const waveIdx = SRC.indexOf('Wave 1: fast sources');
+  assert.ok(ocIdx > 0, 'ocPromise must be declared');
+  assert.ok(waveIdx > 0, 'Wave 1 comment must exist');
+  assert.ok(ocIdx < waveIdx, 'ocPromise must be declared before wave 1 await');
+});
+
+test('9.02 — FII promise also fired before wave 1 (true parallel)', () => {
+  const fiiIdx  = SRC.indexOf('const fiiPromise');
+  const waveIdx = SRC.indexOf('Wave 1: fast sources');
+  assert.ok(fiiIdx > 0,  'fiiPromise must be declared');
+  assert.ok(fiiIdx < waveIdx, 'fiiPromise must start before wave 1');
+});
+
+test('9.03 — Wave 1 has Kite + Yahoo fast sources', () => {
+  assert.ok(SRC.includes('Wave 1: fast sources'));
+  assert.ok(SRC.includes('kite.trade/user/margins'));
+  assert.ok(SRC.includes("yfFetch('^NSEI','5m','1d')"));
+});
+
+test('9.04 — Wave 2 awaits pre-fired promises, not fresh nseGet calls', () => {
+  const w2start = SRC.indexOf('Wave 2: await the slow');
+  assert.ok(w2start > 0, 'Wave 2 comment must exist');
+  const w2slice = SRC.slice(w2start, w2start + 300);
+  assert.ok(w2slice.includes('ocPromise'), 'Wave 2 must use pre-fired ocPromise');
+  assert.ok(!w2slice.includes('nseGet('), 'Wave 2 must not re-call nseGet()');
+});
+
+test('9.05 — fiiJ destructured from wave 2', () => {
+  assert.ok(SRC.includes('ocJ, idxJ, yfOptsR, fiiJ'));
+});
+
+test('9.06 — Both waves use Promise.allSettled', () => {
+  const count = (SRC.match(/Promise\.allSettled/g) || []).length;
+  assert.ok(count >= 2, 'Must have >=2 Promise.allSettled calls, found ' + count);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+section('10. OPP 4 — LIVE FII DATA FOR F6');
+// ════════════════════════════════════════════════════════════════════════════
+
+test('10.01 — NSE FII endpoint fetched', () => {
+  assert.ok(SRC.includes('fiidiiTradeReact'), 'NSE FII endpoint must be fetched');
+});
+
+test('10.02 — fiiNetCr computed from buy minus sell', () => {
+  assert.ok(SRC.includes('fiiNetCr'), 'fiiNetCr must exist');
+  assert.ok(SRC.includes('buy - sell'), 'Net computed as buy minus sell');
+  assert.ok(SRC.includes('1e7'), 'Must divide by 1e7 to convert to Rs Cr');
+});
+
+test('10.03 — fiiText injected into prompt data block', () => {
+  assert.ok(SRC.includes('FII/DII: ${fiiText}'), 'fiiText in prompt');
+});
+
+test('10.04 — F6 prompt line shows live FII or fallback', () => {
+  assert.ok(SRC.includes('fiiNetCr!==null'), 'F6 must conditionally show live data');
+});
+
+test('10.05 — FII parse errors caught and logged', () => {
+  assert.ok(SRC.includes('[fii] parse error:'), 'Parse error must be logged');
+  assert.ok(SRC.includes('[fii] net='), 'Successful parse must be logged');
+});
+
+test('10.06 — FII unavailable falls back gracefully', () => {
+  assert.ok(SRC.includes('fiiNetCr = null'), 'fiiNetCr defaults to null');
+  assert.ok(SRC.includes('Live FII data unavailable'), 'Fallback message exists');
+});
+
+test('10.07 — fiiJ accessed via gv() helper', () => {
+  assert.ok(SRC.includes('gv(fiiJ)'), 'fiiJ accessed via gv()');
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 section('RESULTS');
 // ════════════════════════════════════════════════════════════════════════════

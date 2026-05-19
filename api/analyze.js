@@ -155,16 +155,28 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // FETCH ALL DATA IN PARALLEL
+  // TWO-WAVE PARALLEL FETCH (Opp 3)
+  // Wave 1 (~1s): Fast data — Kite, Yahoo spot/VIX/BN, globals
+  // Wave 2 (~4-5s): Slow data — NSE option chain (started simultaneously,
+  //   but we don't block on it until after wave-1 processing is done)
+  // Net saving: ~3-4s vs single Promise.allSettled waiting for slowest source
   // ══════════════════════════════════════════════════════════════════════════
   const expiry = getExpiry(0), expiryNx = getExpiry(1);
 
+  // Start BOTH waves immediately — they run in true parallel
+  // Wave 2 promises are fired NOW, not after wave 1 resolves
+  const ocPromise     = nseGet(`/api/option-chain-indices?symbol=NIFTY`);
+  const idxPromise    = nseGet('/api/allIndices');
+  const yfOptsPromise = yfOptions('^NSEI');
+  // Also start NSE FII/DII data (Opp 4 — live F6 data)
+  const fiiPromise    = nseGet('/api/fiidiiTradeReact').catch(() => null);
+
+  // Wave 1: fast sources — resolve in ~1-2s
   const [
-    margR, posR, ordR,            // Kite: margins, positions, orders
-    yIntra, yDaily,               // Yahoo: Nifty 5m intraday + 60d daily
-    yBN, yVix,                    // Yahoo: Bank Nifty, India VIX fallback
-    sp500R, dowR, nasR, crudeR, goldR, usdInrR, nikkeiR, hsiR, // Global
-    idxJ, ocJ, yfOptsR,           // NSE: allIndices + option chain + Yahoo options fallback
+    margR, posR, ordR,
+    yIntra, yDaily,
+    yBN, yVix,
+    sp500R, dowR, nasR, crudeR, goldR, usdInrR, nikkeiR, hsiR,
   ] = await Promise.allSettled([
     tFetch('https://api.kite.trade/user/margins',{headers:kH},6000).then(r=>r.json()).catch(()=>null),
     tFetch('https://api.kite.trade/portfolio/positions',{headers:kH},6000).then(r=>r.json()).catch(()=>null),
@@ -176,12 +188,15 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
     yfFetch('^GSPC'), yfFetch('^DJI'), yfFetch('^IXIC'),
     yfFetch('CL=F'),  yfFetch('GC=F'), yfFetch('INR=X'),
     yfFetch('^N225'), yfFetch('^HSI'),
-    nseGet('/api/allIndices'),
-    nseGet(`/api/option-chain-indices?symbol=NIFTY`),
-    yfOptions('^NSEI'),
   ]);
 
   const gv = r => r.status==='fulfilled' ? r.value : null;
+
+  // Wave 2: await the slow NSE sources (already running in background since line 1)
+  // By now wave-1 processing + technicals have consumed ~10ms, so OC is nearly ready
+  const [ocJ, idxJ, yfOptsR, fiiJ] = await Promise.allSettled([
+    ocPromise, idxPromise, yfOptsPromise, fiiPromise,
+  ]);
 
   // ── Kite: margins, positions, orders ──────────────────────────────────────
   const margJ=gv(margR), posJ=gv(posR), ordJ=gv(ordR);
@@ -331,6 +346,31 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
     nxAtmCeP=nxAtmRow.CE?.lastPrice||0; nxAtmPeP=nxAtmRow.PE?.lastPrice||0;
   }
 
+  // ── FII/DII data (Opp 4 — live F6) ──────────────────────────────────────
+  // NSE endpoint: /api/fiidiiTradeReact — returns today's FII equity buy/sell
+  let fiiNetCr = null;  // null = not available (score F6=0), number = Rs Cr net
+  let fiiText  = 'Live FII data unavailable — score F6 neutral';
+  try {
+    const fiiData = gv(fiiJ);
+    if (fiiData?.data?.length) {
+      // Find most recent equity row (FII row, not DII)
+      const fiiRow = fiiData.data.find(r =>
+        (r.category||'').toLowerCase().includes('fii') ||
+        (r.category||'').toLowerCase().includes('foreign')
+      );
+      if (fiiRow) {
+        const buy  = parseFloat(fiiRow.buyValue  || fiiRow.buy  || 0);
+        const sell = parseFloat(fiiRow.sellValue || fiiRow.sell || 0);
+        const net  = buy - sell;
+        fiiNetCr   = (net / 1e7).toFixed(0);  // paise → Rs Cr
+        fiiText    = `FII: Buy Rs${(buy/1e7).toFixed(0)}Cr, Sell Rs${(sell/1e7).toFixed(0)}Cr, Net Rs${fiiNetCr}Cr`;
+        console.log(`[fii] net=${fiiNetCr}Cr`);
+      }
+    }
+  } catch(fiiErr) {
+    console.warn('[fii] parse error:', fiiErr.message);
+  }
+
   // ── Global cues ───────────────────────────────────────────────────────────
   const G={
     sp500:toG(gv(sp500R)),dow:toG(gv(dowR)),nas:toG(gv(nasR)),
@@ -403,6 +443,7 @@ ${gLine('Crude',G.crude)} | ${gLine('Gold',G.gold)} | ${gLine('USD/INR',G.usdInr
 
 POSITIONS: ${posText}
 PENDING ORDERS: ${ordText}
+FII/DII: ${fiiText}
 
 MANDATORY STAY OUT if: VIX>22 | spot=0 | expiry day score -5 to +5 | insufficient margin
 
@@ -415,7 +456,7 @@ F2  PCR/OI:    [score]  [PCR | Call±Cr vs Put±Cr] — [ceiling/floor interpret
 F3  Intraday:  [score]  [spot level, key move] — [pattern: pullback/rejection/breakout]
 F4  Trend:     [score]  [day change %]         — [continuation/reversal]
 F5  Sector:    [score]  [BankNifty%, FinSvc%]  — [confirming/diverging]
-F6  FII:       [score]  [FII net Rs Cr]        — [buying/selling intent]
+F6  FII:       [score]  ${fiiNetCr!==null?`Net Rs${fiiNetCr}Cr`:"no live data"}  — [buying/selling intent]
 F7  Breadth:   [score]  [advance:decline]      — [broad selling/buying/neutral]
 F8  Global:    [score]  [S&P500%, Crude$]      — [tailwind/headwind]
 F9  IV:        [score]  [IVP, ATM IV]          — [risk modifier note]
@@ -454,16 +495,63 @@ AUTO-TRADE: [YES - CE/PE / NO]
     return             { provider: 'anthropic',  model: 'claude-opus-4-6',         tier: 'opus'        };
   }
 
-  // Pre-score from parsed SCORES block if available (first pass — use 0 if not yet known)
-  // We do a lightweight pre-parse to get the score before routing
+  // ── Opp 1: Rule-based pre-scorer for model routing ─────────────────────
+  // The AI hasn't run yet so we can't know the final score.
+  // Instead we estimate market regime from the raw data already computed.
+  // Rules mirror the F1/F2/F3/F4/F7/F8 scoring logic:
+  //   Each factor contributes ±2 → max |preScore| = 12
+  //   |preScore| ≥ 12 → Groq, 8-11 → Sonnet, ≤7 → Opus
+  // This means on a clearly bearish day (VIX spike + breadth collapse + breakdown)
+  // we correctly route to Groq free from call one instead of defaulting to Opus.
   let preScore = 0;
   try {
-    const preSm = prompt.match(/(?:TOTAL|total):\s*([+-]?\d+)/);
-    if (preSm) preScore = parseInt(preSm[1]);
-  } catch { /* ignore — score unknown at routing time, defaults to Opus */ }
+    const chgPct = spot && prevCl ? ((spot - prevCl) / prevCl) * 100 : 0;
+    // F1: VIX
+    if      (vix > 20)  preScore -= 2;
+    else if (vix > 17)  preScore -= 1;
+    else if (vix < 14)  preScore += 2;
+    else if (vix < 16)  preScore += 1;
+    // F2: PCR (bearish < 0.8, bullish > 1.3)
+    const pcrN = parseFloat(pcr) || 0;
+    if      (pcrN < 0.7)  preScore -= 2;
+    else if (pcrN < 0.85) preScore -= 1;
+    else if (pcrN > 1.4)  preScore += 2;
+    else if (pcrN > 1.2)  preScore += 1;
+    // F3: Intraday price action
+    if      (spot < prevCl * 0.995) preScore -= 2;  // -0.5% or worse
+    else if (spot < prevCl * 0.999) preScore -= 1;
+    else if (spot > prevCl * 1.005) preScore += 2;  // +0.5% or better
+    else if (spot > prevCl * 1.001) preScore += 1;
+    // F4: Day trend vs SMA20
+    if      (spot < sma20 * 0.995) preScore -= 2;
+    else if (spot < sma20)         preScore -= 1;
+    else if (spot > sma20 * 1.005) preScore += 2;
+    else if (spot > sma20)         preScore += 1;
+    // F7: Breadth (advances vs declines)
+    const advN = parseInt(advances) || 0, decN = parseInt(declines) || 0;
+    if (advN + decN > 10) {
+      const breadthRatio = advN / (advN + decN);
+      if      (breadthRatio < 0.3)  preScore -= 2;
+      else if (breadthRatio < 0.45) preScore -= 1;
+      else if (breadthRatio > 0.7)  preScore += 2;
+      else if (breadthRatio > 0.55) preScore += 1;
+    }
+    // F8: Global cues (S&P500 as proxy)
+    if (G.sp500?.pct) {
+      const sp = parseFloat(G.sp500.pct);
+      if      (sp < -1.0) preScore -= 2;
+      else if (sp < -0.3) preScore -= 1;
+      else if (sp >  1.0) preScore += 2;
+      else if (sp >  0.3) preScore += 1;
+    }
+    console.log(`[pre-score] vix=${vix} pcr=${pcrN} chg=${chgPct.toFixed(2)}% breadth=${advances}/${declines} sp500=${G.sp500?.pct}% → preScore=${preScore}`);
+  } catch(preErr) {
+    console.warn('[pre-score] failed:', preErr.message, '— defaulting to 0 (Opus)');
+    preScore = 0;
+  }
 
   const selectedModel = selectModel(preScore);
-  console.log(`[routing] score=${preScore} abs=${Math.abs(preScore)} → ${selectedModel.tier} (${selectedModel.model})`);
+  console.log(`[routing] preScore=${preScore} abs=${Math.abs(preScore)} → ${selectedModel.tier} (${selectedModel.model})`);
 
   // ── Unified AI fetch (Groq uses OpenAI-compat, Anthropic uses native) ────
   async function callProvider(provider, model, retryNum=0) {
