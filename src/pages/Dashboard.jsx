@@ -173,6 +173,7 @@ export default function Dashboard() {
   const [inTok,       setInTok]       = useState(0)
   const [outTok,      setOutTok]      = useState(0)
   const [calls,       setCalls]       = useState(0)
+  const [totalCost,   setTotalCost]   = useState(0)   // accumulated per-model cost (Groq=₹0)
   const [cd,          setCd]          = useState(600)
   const [pulse,       setPulse]       = useState(false)
   const [showFull,    setShowFull]    = useState(false)
