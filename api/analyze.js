@@ -287,8 +287,32 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
   let totCeOI=0,totPeOI=0;
   let ocTable='Strike | CE_LTP | CE_OI      | OI_CHG   | PE_LTP | PE_OI      | OI_CHG\n';
   ocTable    +='-------|--------|------------|----------|--------|------------|----------\n';
-  const ocData=gv(ocJ);
+  let ocData=gv(ocJ);
   const yfOptsData=gv(yfOptsR);
+
+  // NSE OC retry with cookie header if first attempt returned null
+  // NSE sometimes needs a prior session cookie — retry once with Accept header trick
+  if (!ocData && atm > 0) {
+    try {
+      console.log('[oc] first attempt failed — retrying NSE OC with cookie header');
+      const retryR = await tFetch(
+        `https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY`,
+        { headers: { ...nseH,
+          'Cookie': 'nsit=; nseappid=; ak_bmsc=; bm_sv=',
+          'Cache-Control': 'no-cache',
+        }}, 6000
+      );
+      if (retryR.ok) {
+        const retryJ = await retryR.json().catch(() => null);
+        if (retryJ?.records?.data?.length) {
+          ocData = retryJ;
+          console.log('[oc] retry succeeded');
+        }
+      }
+    } catch(ocRetryErr) {
+      console.warn('[oc] retry also failed:', ocRetryErr.message);
+    }
+  }
 
   // Yahoo Finance options fallback — use when NSE option chain not available
   if(!ocData && yfOptsData && atm>0) {
@@ -345,6 +369,25 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
     const nxAtmRow=nxOcRows.find(r=>r.strikePrice===atm)||{};
     nxAtmCeP=nxAtmRow.CE?.lastPrice||0; nxAtmPeP=nxAtmRow.PE?.lastPrice||0;
   }
+
+  // ── OC data quality guard ────────────────────────────────────────────────
+  // If BOTH NSE and Yahoo failed to produce non-zero premiums, analysis is
+  // meaningless — block with a clear error rather than sending Rs0 to the AI
+  const ocMissing = atmCeP === 0 && atmPeP === 0;
+  if (ocMissing) {
+    const earlyMins = istMins - (9*60+15);
+    const isEarlySession = earlyMins < 15; // first 15 min — OC may not have populated
+    const reason = isEarlySession
+      ? `Option chain not yet populated (${earlyMins} min after open). Retry after 9:30 IST.`
+      : 'Option chain data unavailable from both NSE and Yahoo Finance. Retry in 1–2 min.';
+    console.warn('[oc-guard] atmCeP=0 atmPeP=0 —', reason);
+    return res.status(503).json({
+      error: `Data unavailable: ${reason}`,
+      ocMissing: true,
+      retryAfterSec: isEarlySession ? (15 - earlyMins) * 60 : 90,
+    });
+  }
+  console.log(`[oc-guard] ok — atmCeP=${atmCeP} atmPeP=${atmPeP} pcr=${pcr} src=${nseSrc}`);
 
   // ── FII/DII data (Opp 4 — live F6) ──────────────────────────────────────
   // NSE endpoint: /api/fiidiiTradeReact — returns today's FII equity buy/sell

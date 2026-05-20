@@ -67,6 +67,17 @@ function isMarketOpen() {
   const mins = ist.getHours()*60+ist.getMinutes()
   return mins>=9*60+15 && mins<15*60+30
 }
+// Auto-analysis should not fire until 9:25 IST minimum:
+// - NSE option chain needs ~5 min to populate after open
+// - Need at least 10 × 5-min candles for meaningful VWAP
+// - OC data at 9:15 is often stale/zero → causes STAY OUT on bad data
+function isReadyForAutoAnalysis() {
+  const ist = getIST()
+  const day = ist.getDay()
+  if (day===0||day===6) return false
+  const mins = ist.getHours()*60+ist.getMinutes()
+  return mins>=9*60+25 && mins<15*60+20  // 9:25–15:20 IST
+}
 function isAutoTradeAllowed() {
   const ist = getIST()
   return ist.getHours()*60+ist.getMinutes() <= 13*60+45
@@ -495,6 +506,12 @@ export default function Dashboard() {
       if (!res.ok) {
         const detail = JSON.stringify(data, null, 2)
         setErrDetail(`HTTP ${res.status}\n${detail}`)
+        // 503 with ocMissing = data gap, not a real error — skip silently in auto-analysis
+        if (res.status === 503 && data?.ocMissing) {
+          console.warn('[auto] OC data gap — skipping cycle:', data.error)
+          setErr(data.error || 'Option chain data gap — skipping cycle')
+          return  // do not throw — auto-analysis continues at next interval
+        }
         throw new Error(data.error||`API error (${res.status})`)
       }
       // Detect Kite auth errors in successful HTTP responses
@@ -566,11 +583,16 @@ export default function Dashboard() {
         setPendingSignal(data)
       }
     } catch(e) {
-      setErr(e.message)
+      // Check if this is a data-unavailable 503 (not a real error)
+      const isDataGap = e.message?.includes('Option chain not yet') || e.message?.includes('Data unavailable')
+      setErr(isDataGap ? e.message : e.message)
       setErrDetail(e.stack || e.message)
       setApiLog(l=>{
         const errTs=new Date().toLocaleTimeString('en-IN',{hour12:false,timeZone:'Asia/Kolkata'})
-        return [{ts:errTs,type:'💥 THROW',msg:e.message.slice(0,80),status:'err',color:'#F87171'},...l.slice(0,49)]
+        const icon = isDataGap ? '⏳' : '💥'
+        const type = isDataGap ? `${icon} DATA GAP` : `${icon} THROW`
+        const col  = isDataGap ? '#F59E0B' : '#F87171'
+        return [{ts:errTs,type,msg:e.message.slice(0,80),status:'err',color:col},...l.slice(0,49)]
       })
     } finally {
       clearInterval(elRef.current)
@@ -582,9 +604,9 @@ export default function Dashboard() {
   useEffect(()=>{
     const ms = autoIntervalMin * 60 * 1000
     if (autoOn&&!stopped) {
-      if (isMarketOpen()) { analyse(); setCd(autoIntervalMin*60) } else setCd(0)
-      cdRef.current  = setInterval(()=>{ if(isMarketOpen()) setCd(p=>p>1?p-1:autoIntervalMin*60) },1000)
-      intRef.current = setInterval(()=>{ if(isMarketOpen()) { analyse(); setCd(autoIntervalMin*60) } },ms)
+      if (isReadyForAutoAnalysis()) { analyse(); setCd(autoIntervalMin*60) } else setCd(0)
+      cdRef.current  = setInterval(()=>{ if(isReadyForAutoAnalysis()) setCd(p=>p>1?p-1:autoIntervalMin*60) },1000)
+      intRef.current = setInterval(()=>{ if(isReadyForAutoAnalysis()) { analyse(); setCd(autoIntervalMin*60) } },ms)
     } else {
       clearInterval(intRef.current); clearInterval(cdRef.current)
     }
@@ -925,7 +947,7 @@ export default function Dashboard() {
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div>
             <div style={{fontWeight:700,fontSize:14}}>Auto Analysis</div>
-            <div style={{fontSize:11,color:'#4B5563'}}>Market hours only (9:15–3:30 IST)</div>
+            <div style={{fontSize:11,color:'#4B5563'}}>Auto fires 9:25–15:20 IST (waits for OC data)</div>
           </div>
           <Toggle on={autoOn&&!stopped} set={v=>setAutoOn(v)} disabled={stopped}/>
         </div>

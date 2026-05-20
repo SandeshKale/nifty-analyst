@@ -675,6 +675,82 @@ test('10.07 — fiiJ accessed via gv() helper', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+section('11. OC DATA QUALITY GUARD');
+// ════════════════════════════════════════════════════════════════════════════
+
+test('11.01 — OC retry with cookie header when first attempt fails', () => {
+  assert.ok(SRC.includes('[oc] first attempt failed'), 'OC retry log must exist');
+  assert.ok(SRC.includes('Cookie'), 'Retry must include Cookie header');
+  assert.ok(SRC.includes('[oc] retry succeeded'), 'OC retry success log must exist');
+});
+
+test('11.02 — Hard block when atmCeP=0 AND atmPeP=0', () => {
+  assert.ok(SRC.includes('ocMissing'), 'ocMissing flag must exist');
+  assert.ok(SRC.includes('atmCeP === 0 && atmPeP === 0'), 'Guard must check both premiums');
+});
+
+test('11.03 — 503 returned with ocMissing:true field', () => {
+  assert.ok(SRC.includes('status(503)'), 'Must return 503 on OC missing');
+  assert.ok(SRC.includes('ocMissing: true'), 'Response must include ocMissing:true');
+});
+
+test('11.04 — Early session vs stale data distinguished in error message', () => {
+  assert.ok(SRC.includes('Retry after 9:30 IST'), 'Early session message must exist');
+  assert.ok(SRC.includes('retryAfterSec'), 'Retry hint must be in response');
+});
+
+test('11.05 — OC guard logs ok path with actual premium values', () => {
+  assert.ok(SRC.includes('[oc-guard] ok'), 'Success path must be logged');
+  assert.ok(SRC.includes('atmCeP='), 'Must log actual ATM CE premium');
+});
+
+test('11.06 — ocMissing check happens AFTER both NSE and Yahoo parsing', () => {
+  const ocGuardIdx = SRC.indexOf('OC data quality guard');
+  const yfOptsIdx  = SRC.indexOf('Yahoo Finance options fallback');
+  const nseOcIdx   = SRC.indexOf('if(ocData?.records?.data');
+  assert.ok(ocGuardIdx > yfOptsIdx, 'Guard must be after Yahoo fallback');
+  assert.ok(ocGuardIdx > nseOcIdx,  'Guard must be after NSE OC parsing');
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+section('12. EARLY SESSION WARMUP GUARD');
+// ════════════════════════════════════════════════════════════════════════════
+
+test('12.01 — isReadyForAutoAnalysis starts at 9:25 IST (not 9:15)', () => {
+  assert.ok(SRC.includes('isReadyForAutoAnalysis') || readFileSync('src/pages/Dashboard.jsx','utf8').includes('isReadyForAutoAnalysis'),
+    'isReadyForAutoAnalysis function must exist');
+  const dash = readFileSync('src/pages/Dashboard.jsx', 'utf8');
+  assert.ok(dash.includes('9*60+25'), 'Auto-analysis must start at 9:25 IST');
+});
+
+test('12.02 — Auto-analysis loop uses isReadyForAutoAnalysis not isMarketOpen', () => {
+  const dash = readFileSync('src/pages/Dashboard.jsx', 'utf8');
+  assert.ok(dash.includes('isReadyForAutoAnalysis()'), 'Auto loop must use isReadyForAutoAnalysis');
+});
+
+test('12.03 — 503 ocMissing response skipped silently in auto-analysis', () => {
+  const dash = readFileSync('src/pages/Dashboard.jsx', 'utf8');
+  assert.ok(dash.includes('data?.ocMissing'), 'Dashboard must handle ocMissing');
+  assert.ok(dash.includes('skipping cycle'), 'Must skip cycle on OC data gap');
+});
+
+test('12.04 — Manual ANALYSE NOW still works from 9:15 (not gated)', () => {
+  // isMarketOpen (9:15) still used for manual button — only auto-analysis uses 9:25
+  const dash = readFileSync('src/pages/Dashboard.jsx', 'utf8');
+  assert.ok(dash.includes('isMarketOpen()'), 'Manual button must still use isMarketOpen');
+  assert.ok(dash.includes('isReadyForAutoAnalysis()'), 'Auto loop uses isReadyForAutoAnalysis');
+  // Both must coexist
+  assert.ok(dash.includes('isMarketOpen') && dash.includes('isReadyForAutoAnalysis'),
+    'Both functions must coexist — manual vs auto have different gates');
+});
+
+test('12.05 — 9:25–15:20 window is correct (stops 10min before close)', () => {
+  const dash = readFileSync('src/pages/Dashboard.jsx', 'utf8');
+  assert.ok(dash.includes('9*60+25'), '9:25 start must exist');
+  assert.ok(dash.includes('15*60+20'), '15:20 end must exist — stops 10min before close');
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 section('RESULTS');
 // ════════════════════════════════════════════════════════════════════════════
 
