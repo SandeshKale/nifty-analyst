@@ -224,6 +224,49 @@ export default function Dashboard() {
   useEffect(()=>{atRef.current=atOn},[atOn])
   useEffect(()=>{posRef.current=position},[position])
 
+  // ── Theme: set CSS variables whenever darkMode changes ──────────────────
+  // Also persists preference to localStorage so it survives page reload
+  useEffect(() => {
+    const saved = localStorage.getItem('nifty_dark_mode')
+    // On first mount, restore saved preference
+    if (saved !== null) {
+      const savedDark = saved === 'true'
+      if (savedDark !== darkMode) setDarkMode(savedDark)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    localStorage.setItem('nifty_dark_mode', String(darkMode))
+    const r = document.documentElement.style
+    if (darkMode) {
+      r.setProperty('--bg',   '#09090F')
+      r.setProperty('--bg2',  '#111120')
+      r.setProperty('--bg3',  '#1A1A30')
+      r.setProperty('--card', '#111120')
+      r.setProperty('--bdr',  'rgba(255,255,255,0.06)')
+      r.setProperty('--txt',  '#E8E8F8')
+      r.setProperty('--txt2', '#9CA3AF')
+      r.setProperty('--txt3', '#4B5563')
+      r.setProperty('--acc',  '#6366F1')
+      r.setProperty('--acc2', '#A5B4FC')
+      document.body.style.background = '#09090F'
+      document.body.style.color      = '#E8E8F8'
+    } else {
+      r.setProperty('--bg',   '#F0F2F5')
+      r.setProperty('--bg2',  '#FFFFFF')
+      r.setProperty('--bg3',  '#E5E7EB')
+      r.setProperty('--card', '#FFFFFF')
+      r.setProperty('--bdr',  'rgba(0,0,0,0.08)')
+      r.setProperty('--txt',  '#111827')
+      r.setProperty('--txt2', '#374151')
+      r.setProperty('--txt3', '#6B7280')
+      r.setProperty('--acc',  '#4F46E5')
+      r.setProperty('--acc2', '#4338CA')
+      document.body.style.background = '#F0F2F5'
+      document.body.style.color      = '#111827'
+    }
+  }, [darkMode])
+
   // Live SGT clock
   useEffect(()=>{
     const tick = () => {
@@ -642,7 +685,7 @@ export default function Dashboard() {
   const sec  = {fontSize:10,color:'var(--txt3,#374151)',letterSpacing:'0.12em',textTransform:'uppercase',fontWeight:700,paddingBottom:6}
 
   return (
-    <div style={{minHeight:'100vh',background:'#07070F',color:'#E0E0F0',fontFamily:"'Segoe UI','SF Pro Display',sans-serif",paddingBottom:80,maxWidth:520,margin:'0 auto'}}>
+    <div style={{minHeight:'100vh',background:'var(--bg,#07070F)',color:'var(--txt,#E0E0F0)',fontFamily:"'Segoe UI','SF Pro Display',sans-serif",paddingBottom:80,maxWidth:520,margin:'0 auto'}}>
 
       {/* HEADER */}
       <div style={{background:'linear-gradient(135deg,#0D0D1C,#070710)',borderBottom:'1px solid rgba(255,255,255,0.06)',padding:'12px 16px'}}>

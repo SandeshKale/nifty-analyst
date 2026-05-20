@@ -1,24 +1,31 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 export default function Callback() {
-  const navigate = useNavigate()
+  const navigate   = useNavigate()
   const [status, setStatus] = useState('Exchanging token with Kite…')
-  const [err, setErr] = useState('')
+  const [err, setErr]       = useState('')
+  // Guard: request_token is one-time-use — must call exchangeToken exactly once
+  // React 18 Strict Mode double-invokes effects in dev; the ref prevents the second call
+  const calledRef = useRef(false)
 
   useEffect(() => {
+    if (calledRef.current) return   // already called — skip
+    calledRef.current = true
+
     const params       = new URLSearchParams(window.location.search)
     const requestToken = params.get('request_token')
-    const action       = params.get('action')
 
-    if (action === 'login' && requestToken) {
-      exchangeToken(requestToken)
-    } else if (!requestToken) {
+    if (!requestToken) {
       setErr('No request_token in URL. Kite login may have been cancelled.')
-    } else {
-      // Sometimes Kite doesn't send action param — try anyway
-      exchangeToken(requestToken)
+      return
     }
+
+    // Immediately clear the token from the URL so browser back/reload can't replay it
+    // This prevents "Token is invalid or has expired" on any URL revisit
+    window.history.replaceState({}, '', '/callback')
+
+    exchangeToken(requestToken)
   }, [])
 
   const exchangeToken = async (requestToken) => {
