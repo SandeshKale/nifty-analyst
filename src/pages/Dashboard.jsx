@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { activeUser, activeToken, knownUsers, switchUser, logoutUser } from '../App.jsx'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 const AUTO_INTERVAL_MS = 10 * 60 * 1000
@@ -234,12 +235,15 @@ export default function Dashboard() {
     return () => clearInterval(clockRef.current)
   }, [])
 
-  const accessToken = localStorage.getItem('kite_access_token')
-  const userName    = localStorage.getItem('kite_user_name')||'Trader'
+  const uid         = activeUser()
+  const accessToken = activeToken()
+  const userName    = (uid ? localStorage.getItem(`kite_user_name_${uid}`) : null) || 'Trader'
+  const [accounts,  setAccounts]  = useState(() => knownUsers())
   // totalCost now accumulated per-model in state (Groq calls = ₹0)
   const cpc         = calls>0?totalCost/calls:0
 
-  const logout = () => { localStorage.clear(); navigate('/login') }
+  const logout  = () => logoutUser(uid)
+  const refresh = () => setAccounts(knownUsers())
 
   // ── Rule helpers ──────────────────────────────────────────────────────────
 
@@ -443,7 +447,7 @@ export default function Dashboard() {
     if (busy||stopped) return
 
     // Check token expiry before calling API
-    const expiry = localStorage.getItem('kite_token_expiry')
+    const expiry = uid ? localStorage.getItem(`kite_token_expiry_${uid}`) : null
     if (expiry && new Date() > new Date(expiry)) {
       setErr('Kite session expired — please logout and login again to get a fresh token.')
       setAutoOn(false); setAtOn(false)  // stop auto-retrying with expired token
@@ -655,7 +659,7 @@ export default function Dashboard() {
               {md.isPostMarket&&<span style={{color:'#374151'}}> · Post-market</span>}
               {md.isFresh===false&&!md.isPreMarket&&!md.isPostMarket&&<span style={{color:'#F59E0B'}}> · ⚠️ Stale ({md.dataAgeMin}min)</span>}
               {(()=>{
-                const exp=localStorage.getItem('kite_token_expiry');
+                const exp= uid ? localStorage.getItem(`kite_token_expiry_${uid}`) : null;
                 if(!exp) return null;
                 const istDate=new Date(new Date(exp).getTime()+5.5*3600000);
                 const hh=String(istDate.getUTCHours()).padStart(2,'0');
@@ -680,13 +684,40 @@ export default function Dashboard() {
               <div style={{fontSize:10,color:'#374151',marginTop:1}}>{result?.sgt??'—'}</div>
             </div>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              {/* Theme toggle */}
               <button onClick={()=>setDarkMode(p=>!p)}
                 title={darkMode?'Switch to light mode':'Switch to dark mode'}
                 style={{fontSize:14,background:'none',border:'1px solid var(--bdr,rgba(255,255,255,0.06))',
                   borderRadius:6,padding:'3px 7px',cursor:'pointer',color:'var(--txt3,#6B7280)',lineHeight:1}}>
                 {darkMode?'☀️':'🌙'}
               </button>
-              <button onClick={logout} style={{fontSize:11,color:'var(--txt3,#374151)',background:'none',border:'1px solid var(--bdr,rgba(255,255,255,0.06))',borderRadius:6,padding:'4px 8px',cursor:'pointer'}}>Logout</button>
+              {/* Account switcher — shows when >1 account logged in */}
+              {accounts.filter(a=>a.token).length > 1 && accounts.filter(a=>a.token).map(acc=>(
+                <button key={acc.uid} onClick={()=>switchUser(acc.uid)}
+                  title={`Switch to ${acc.name} (${acc.uid})`}
+                  style={{
+                    fontSize:10,fontWeight:700,padding:'3px 8px',borderRadius:6,cursor:'pointer',
+                    border:`1px solid ${acc.uid===uid?'#6366F1':'var(--bdr,rgba(255,255,255,0.06))'}`,
+                    background: acc.uid===uid?'rgba(99,102,241,0.15)':'transparent',
+                    color: acc.uid===uid?'#A5B4FC':'var(--txt3,#6B7280)',
+                  }}>
+                  {acc.name.split(' ')[0]}
+                </button>
+              ))}
+              {/* Add account (login another user without logging out) */}
+              <button onClick={()=>navigate('/login?add=1')}
+                title="Add another Zerodha account"
+                style={{fontSize:12,background:'none',border:'1px solid var(--bdr,rgba(255,255,255,0.06))',
+                  borderRadius:6,padding:'3px 7px',cursor:'pointer',color:'var(--txt3,#6B7280)',lineHeight:1}}>
+                +
+              </button>
+              <button onClick={logout}
+                title={`Logout ${userName} (${uid})`}
+                style={{fontSize:11,color:'var(--txt3,#374151)',background:'none',
+                  border:'1px solid var(--bdr,rgba(255,255,255,0.06))',
+                  borderRadius:6,padding:'4px 8px',cursor:'pointer'}}>
+                Logout
+              </button>
             </div>
           </div>
         </div>

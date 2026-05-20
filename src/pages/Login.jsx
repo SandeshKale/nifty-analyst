@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { activeToken, knownUsers } from '../App.jsx'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -9,7 +10,10 @@ export default function Login() {
   const [mktStatus, setMktStatus] = useState('')
 
   useEffect(() => {
-    if (localStorage.getItem('kite_access_token')) navigate('/')
+    // Only auto-redirect if already logged in AND no ?add=1 param
+    // ?add=1 means user clicked '+' to add another account
+    const isAdding = new URLSearchParams(window.location.search).get('add') === '1'
+    if (!isAdding && activeToken()) navigate('/')
     const tick = () => {
       const ist = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
       const sgtStr = new Date().toLocaleTimeString('en-SG', { timeZone: 'Asia/Singapore', hour:'2-digit', minute:'2-digit', second:'2-digit' })
@@ -56,8 +60,24 @@ export default function Login() {
         </div>
 
         <div style={{fontSize:22,fontWeight:800,color:'#E8E8F8',letterSpacing:'0.05em',marginBottom:6}}>NIFTY OPTIONS ANALYST</div>
+        {/* Show existing accounts when adding a new one */}
+        {(() => {
+          const existing = knownUsers().filter(u => u.token)
+          if (!existing.length) return null
+          return (
+            <div style={{marginBottom:16,padding:'8px 12px',background:'rgba(99,102,241,0.08)',borderRadius:8,border:'1px solid rgba(99,102,241,0.2)',textAlign:'left'}}>
+              <div style={{fontSize:10,color:'#6366F1',fontWeight:700,letterSpacing:'.06em',marginBottom:4}}>ACTIVE ACCOUNTS</div>
+              {existing.map(u => (
+                <div key={u.uid} style={{fontSize:12,color:'#9CA3AF',display:'flex',justifyContent:'space-between'}}>
+                  <span>{u.name}</span><span style={{fontFamily:'monospace',color:'#4B5563'}}>{u.uid}</span>
+                </div>
+              ))}
+              <div style={{fontSize:11,color:'#4B5563',marginTop:4}}>Logging in will add a new account ↓</div>
+            </div>
+          )
+        })()}
         <div style={{fontSize:13,color:'#4B5563',marginBottom:28,lineHeight:1.6}}>
-          Personal F&O analysis — live Kite data, global cues,<br/>10-factor skill scoring, auto-trade execution.
+          Connect your Zerodha account to start analysis.
         </div>
 
         <button style={S.btn} onClick={handleLogin} disabled={loading}>

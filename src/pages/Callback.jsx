@@ -31,17 +31,33 @@ export default function Callback() {
       const data = await res.json()
 
       if (data.accessToken) {
-        // Store access token (valid until midnight IST)
-        localStorage.setItem('kite_access_token', data.accessToken)
-        localStorage.setItem('kite_user_id',      data.userId || '')
-        localStorage.setItem('kite_user_name',    data.userName || '')
-        // Token expires at midnight IST — store expiry as timestamp
+        const uid = data.userId || 'default'
+        // ── Per-user namespaced storage (supports multiple Zerodha accounts) ──
+        // Each user's data is stored under their Zerodha user_id key.
+        // This prevents cross-contamination even if two users share one browser.
+        localStorage.setItem(`kite_access_token_${uid}`, data.accessToken)
+        localStorage.setItem(`kite_user_name_${uid}`,    data.userName || uid)
+        // Token expires at midnight IST
         const midnightIST = new Date()
         midnightIST.setUTCHours(18, 30, 0, 0) // 18:30 UTC = midnight IST
         if (midnightIST < new Date()) midnightIST.setDate(midnightIST.getDate() + 1)
-        localStorage.setItem('kite_token_expiry', midnightIST.toISOString())
+        localStorage.setItem(`kite_token_expiry_${uid}`, midnightIST.toISOString())
 
-        setStatus(`✅ Logged in as ${data.userName || data.userId}. Redirecting…`)
+        // Register this user in the known-users list
+        const known = JSON.parse(localStorage.getItem('kite_known_users') || '[]')
+        if (!known.includes(uid)) {
+          known.push(uid)
+          localStorage.setItem('kite_known_users', JSON.stringify(known))
+        }
+        // Also store display name separately for the account switcher
+        const names = JSON.parse(localStorage.getItem('kite_user_names') || '{}')
+        names[uid] = data.userName || uid
+        localStorage.setItem('kite_user_names', JSON.stringify(names))
+
+        // Set as active user
+        localStorage.setItem('kite_active_user', uid)
+
+        setStatus(`✅ Logged in as ${data.userName || uid}. Redirecting…`)
         setTimeout(() => navigate('/'), 1200)
       } else {
         setErr(data.error || 'Token exchange failed')

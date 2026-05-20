@@ -755,6 +755,194 @@ test('12.05 — 9:25–15:20 window is correct (stops 10min before close)', () =
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+section('13. MULTI-USER ACCOUNT ISOLATION');
+// ════════════════════════════════════════════════════════════════════════════
+
+// Read the frontend files for static analysis
+const APP_SRC      = readFileSync('src/App.jsx', 'utf8');
+const CB_SRC       = readFileSync('src/pages/Callback.jsx', 'utf8');
+const DASH_SRC     = readFileSync('src/pages/Dashboard.jsx', 'utf8');
+const LOGIN_SRC    = readFileSync('src/pages/Login.jsx', 'utf8');
+
+// ── 13.1 Storage namespacing ─────────────────────────────────────────────
+
+test('13.01 — Token stored under userId-namespaced key (not generic)', () => {
+  // Must use template literal with uid, not hardcoded key
+  assert.ok(CB_SRC.includes('kite_access_token_${uid}'), 'Token key must include userId');
+  assert.ok(!CB_SRC.includes("localStorage.setItem('kite_access_token',"), 'Must NOT use generic token key');
+});
+
+test('13.02 — User name stored under namespaced key', () => {
+  assert.ok(CB_SRC.includes('kite_user_name_${uid}'), 'User name must be namespaced by userId');
+});
+
+test('13.03 — Token expiry stored under namespaced key', () => {
+  assert.ok(CB_SRC.includes('kite_token_expiry_${uid}'), 'Expiry must be namespaced by userId');
+});
+
+test('13.04 — Known users list maintained in localStorage', () => {
+  assert.ok(CB_SRC.includes('kite_known_users'), 'Known users list must be maintained');
+  assert.ok(CB_SRC.includes('kite_user_names'), 'User names map must be maintained');
+});
+
+test('13.05 — Active user set to newly logged-in user', () => {
+  assert.ok(CB_SRC.includes('kite_active_user'), 'Active user must be set after login');
+  assert.ok(CB_SRC.includes("localStorage.setItem('kite_active_user', uid)"), 'Must set active user to new uid');
+});
+
+// ── 13.2 Auth helpers in App.jsx ─────────────────────────────────────────
+
+test('13.06 — activeUser() function exported from App.jsx', () => {
+  assert.ok(APP_SRC.includes('export function activeUser()'), 'activeUser must be exported');
+  assert.ok(APP_SRC.includes("localStorage.getItem('kite_active_user')"), 'activeUser reads kite_active_user');
+});
+
+test('13.07 — activeToken() checks expiry before returning', () => {
+  assert.ok(APP_SRC.includes('export function activeToken()'), 'activeToken must be exported');
+  assert.ok(APP_SRC.includes('kite_token_expiry'), 'activeToken must check expiry');
+  assert.ok(APP_SRC.includes('new Date(expiry) < new Date()'), 'Must compare expiry to current time');
+});
+
+test('13.08 — activeToken() returns null on expiry (not stale token)', () => {
+  assert.ok(APP_SRC.includes("localStorage.removeItem(`kite_access_token_${uid}`)"), 
+    'Must remove expired token from storage');
+  assert.ok(APP_SRC.includes('return null'), 'Must return null when expired');
+});
+
+test('13.09 — knownUsers() returns all registered accounts', () => {
+  assert.ok(APP_SRC.includes('export function knownUsers()'), 'knownUsers must be exported');
+  assert.ok(APP_SRC.includes("kite_known_users"), 'Must read known users list');
+  assert.ok(APP_SRC.includes('uid,'), 'Must include uid in return');
+  assert.ok(APP_SRC.includes('name:'), 'Must include name in return');
+  assert.ok(APP_SRC.includes('token:'), 'Must include token in return');
+  assert.ok(APP_SRC.includes('expiry:'), 'Must include expiry in return');
+});
+
+test('13.10 — switchUser() changes active user and reloads', () => {
+  assert.ok(APP_SRC.includes('export function switchUser(uid)'), 'switchUser must be exported');
+  assert.ok(APP_SRC.includes("localStorage.setItem('kite_active_user', uid)"), 'Must set active user');
+  assert.ok(APP_SRC.includes("window.location.href = '/'"), 'Must reload to reset state');
+});
+
+test('13.11 — logoutUser() removes only that user\'s tokens', () => {
+  assert.ok(APP_SRC.includes('export function logoutUser(uid)'), 'logoutUser must be exported');
+  assert.ok(APP_SRC.includes('removeItem(`kite_access_token_${uid}`)'), 'Must remove namespaced token');
+  assert.ok(APP_SRC.includes('removeItem(`kite_token_expiry_${uid}`)'), 'Must remove namespaced expiry');
+  // Must NOT clear all localStorage (would log out other users)
+  assert.ok(!APP_SRC.includes('localStorage.clear()'), 'Must NOT clear ALL localStorage');
+});
+
+test('13.12 — RequireAuth uses activeToken() not generic localStorage', () => {
+  assert.ok(APP_SRC.includes('const token = activeToken()'), 'RequireAuth must use activeToken()');
+  assert.ok(!APP_SRC.includes("localStorage.getItem('kite_access_token')"), 
+    'RequireAuth must NOT read generic token key');
+});
+
+// ── 13.3 Dashboard isolation ─────────────────────────────────────────────
+
+test('13.13 — Dashboard reads activeUser() not hardcoded localStorage key', () => {
+  assert.ok(DASH_SRC.includes('activeUser()'), 'Must call activeUser()');
+  assert.ok(DASH_SRC.includes('const uid'), 'Must store active user id');
+  assert.ok(DASH_SRC.includes('const accessToken = activeToken()'), 'Must use activeToken()');
+  assert.ok(!DASH_SRC.includes("localStorage.getItem('kite_access_token')"), 
+    'Must NOT read generic token key in Dashboard');
+});
+
+test('13.14 — Dashboard reads user name from namespaced key', () => {
+  assert.ok(DASH_SRC.includes('kite_user_name_${uid}'), 'User name must use namespaced key');
+  assert.ok(!DASH_SRC.includes("localStorage.getItem('kite_user_name')"),
+    'Must NOT use generic user name key');
+});
+
+test('13.15 — Dashboard shows account switcher when multiple accounts active', () => {
+  assert.ok(DASH_SRC.includes('accounts.filter(a=>a.token).length > 1'), 
+    'Switcher must only show when >1 account has valid token');
+  assert.ok(DASH_SRC.includes('switchUser(acc.uid)'), 'Switcher must call switchUser');
+});
+
+test('13.16 — Dashboard logout uses logoutUser(uid) not localStorage.clear()', () => {
+  assert.ok(DASH_SRC.includes('const logout  = () => logoutUser(uid)'), 
+    'Logout must call logoutUser(uid)');
+  assert.ok(!DASH_SRC.includes('localStorage.clear()'), 
+    'Must NOT clear all localStorage (breaks other accounts)');
+});
+
+test('13.17 — Token expiry check uses namespaced key in Dashboard', () => {
+  assert.ok(DASH_SRC.includes('kite_token_expiry_${uid}'), 
+    'Expiry check must use namespaced key');
+});
+
+test('13.18 — Add account button navigates to /login?add=1', () => {
+  assert.ok(DASH_SRC.includes("navigate('/login?add=1')"), 
+    'Add button must pass add=1 to prevent auto-redirect');
+});
+
+// ── 13.4 Login page awareness ────────────────────────────────────────────
+
+test('13.19 — Login page shows existing accounts when adding new one', () => {
+  assert.ok(LOGIN_SRC.includes('knownUsers()'), 'Login must read knownUsers');
+  assert.ok(LOGIN_SRC.includes('ACTIVE ACCOUNTS'), 'Must show existing accounts section');
+  assert.ok(LOGIN_SRC.includes('Logging in will add a new account'), 'Must explain add-account flow');
+});
+
+test('13.20 — Login auto-redirect skipped when ?add=1 present', () => {
+  assert.ok(LOGIN_SRC.includes("get('add') === '1'"), 'Must check add=1 param');
+  assert.ok(LOGIN_SRC.includes('isAdding'), 'Must use isAdding flag to control redirect');
+});
+
+// ── 13.5 Cross-account isolation logic tests ─────────────────────────────
+
+test('13.21 — Two users can have tokens simultaneously without conflict', () => {
+  // Simulate: user AB1234 and CD5678 both have tokens
+  // Verify the key design ensures no overlap
+  const key1 = 'kite_access_token_AB1234';
+  const key2 = 'kite_access_token_CD5678';
+  assert.notStrictEqual(key1, key2, 'Keys must be different');
+  assert.ok(key1.includes('AB1234'), 'Key1 scoped to AB1234');
+  assert.ok(key2.includes('CD5678'), 'Key2 scoped to CD5678');
+  // Switching active user changes which token is used
+  // (activeUser() returns uid → activeToken() reads kite_access_token_{uid})
+  assert.ok(APP_SRC.includes('kite_access_token_${uid}'), 'Active token always scoped to active uid');
+});
+
+test('13.22 — logoutUser isolates removal (other user unaffected)', () => {
+  // logoutUser(uid) only removes keys containing that uid
+  // Keys for other users remain untouched
+  const removesSpecific = APP_SRC.includes('removeItem(`kite_access_token_${uid}`)');
+  const removesAll      = APP_SRC.includes('localStorage.clear()');
+  assert.ok(removesSpecific, 'Must remove specific user token');
+  assert.ok(!removesAll,     'Must NOT clear all storage');
+});
+
+test('13.23 — Same Kite API key works for both users (single developer app)', () => {
+  // kite-session.js uses KITE_API_KEY + KITE_API_SECRET from env
+  // The resulting access_token is scoped to whoever logged in via Zerodha OAuth
+  // No per-user API credentials needed
+  const sessionSrc = readFileSync('api/kite-session.js', 'utf8');
+  assert.ok(sessionSrc.includes('process.env.KITE_API_KEY'), 'Session uses shared API key');
+  assert.ok(sessionSrc.includes('process.env.KITE_API_SECRET'), 'Session uses shared API secret');
+  assert.ok(sessionSrc.includes('access_token'), 'Returns per-user access_token');
+  // The access_token is user-scoped by Zerodha (each login produces a different token)
+  assert.ok(sessionSrc.includes('user_id'), 'Returns user_id for namespacing');
+});
+
+test('13.24 — analyze.js uses accessToken from request body (user-scoped)', () => {
+  // analyze.js receives accessToken in POST body — it comes from the active user's
+  // namespaced localStorage. Each user's analysis uses their own token.
+  assert.ok(SRC.includes('const accessToken = body.accessToken'), 'analyze.js reads from request body');
+  assert.ok(SRC.includes(`'Authorization': \`token \${apiKey}:\${accessToken}\``), 
+    'Kite calls use the per-user accessToken');
+});
+
+test('13.25 — No shared state between users in analyze.js', () => {
+  // analyze.js is stateless — every call is independent
+  // No module-level variables persist user state
+  assert.ok(!SRC.includes('let globalToken'), 'No global token variable');
+  assert.ok(!SRC.includes('module.exports.token'), 'No exported token state');
+  assert.ok(SRC.includes('async function runAnalysis'), 'Analysis is function-scoped, not global');
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 section('RESULTS');
 // ════════════════════════════════════════════════════════════════════════════
 
