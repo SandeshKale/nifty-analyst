@@ -689,14 +689,15 @@ test('11.02 — Hard block when atmCeP=0 AND atmPeP=0', () => {
   assert.ok(SRC.includes('atmCeP === 0 && atmPeP === 0'), 'Guard must check both premiums');
 });
 
-test('11.03 — 503 returned with ocMissing:true field', () => {
-  assert.ok(SRC.includes('status(503)'), 'Must return 503 on OC missing');
-  assert.ok(SRC.includes('ocMissing: true'), 'Response must include ocMissing:true');
+test('11.03 — OC missing injects warning into prompt (no hard block)', () => {
+  assert.ok(SRC.includes('OC DATA UNAVAILABLE'), 'OC missing warning must go into prompt');
+  assert.ok(SRC.includes('Score F2/F9 as 0'), 'Model instructed to zero F2/F9 when OC missing');
+  assert.ok(SRC.includes('Do NOT say STAY OUT solely'), 'Model must not STAY OUT just for missing OC');
 });
 
-test('11.04 — Early session vs stale data distinguished in error message', () => {
-  assert.ok(SRC.includes('Retry after 9:30 IST'), 'Early session message must exist');
-  assert.ok(SRC.includes('retryAfterSec'), 'Retry hint must be in response');
+test('11.04 — Early session vs stale OC distinguished in prompt warning', () => {
+  assert.ok(SRC.includes('OC DATA PENDING'), 'Early session OC note must exist in prompt');
+  assert.ok(SRC.includes('ATM premiums not yet available'), 'Clear reason shown in prompt');
 });
 
 test('11.05 — OC guard logs ok path with actual premium values', () => {
@@ -704,12 +705,12 @@ test('11.05 — OC guard logs ok path with actual premium values', () => {
   assert.ok(SRC.includes('atmCeP='), 'Must log actual ATM CE premium');
 });
 
-test('11.06 — ocMissing check happens AFTER both NSE and Yahoo parsing', () => {
-  const ocGuardIdx = SRC.indexOf('OC data quality guard');
+test('11.06 — OC warn-and-continue happens AFTER both NSE and Yahoo parsing', () => {
+  const ocGuardIdx = SRC.indexOf('OC data quality');
   const yfOptsIdx  = SRC.indexOf('Yahoo Finance options fallback');
   const nseOcIdx   = SRC.indexOf('if(ocData?.records?.data');
-  assert.ok(ocGuardIdx > yfOptsIdx, 'Guard must be after Yahoo fallback');
-  assert.ok(ocGuardIdx > nseOcIdx,  'Guard must be after NSE OC parsing');
+  assert.ok(ocGuardIdx > yfOptsIdx, 'Warn must be after Yahoo fallback');
+  assert.ok(ocGuardIdx > nseOcIdx,  'Warn must be after NSE OC parsing');
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -728,10 +729,11 @@ test('12.02 — Auto-analysis loop uses isReadyForAutoAnalysis not isMarketOpen'
   assert.ok(dash.includes('isReadyForAutoAnalysis()'), 'Auto loop must use isReadyForAutoAnalysis');
 });
 
-test('12.03 — 503 ocMissing response skipped silently in auto-analysis', () => {
-  const dash = readFileSync('src/pages/Dashboard.jsx', 'utf8');
-  assert.ok(dash.includes('data?.ocMissing'), 'Dashboard must handle ocMissing');
-  assert.ok(dash.includes('skipping cycle'), 'Must skip cycle on OC data gap');
+test('12.03 — OC missing no longer returns 503 (warn-and-continue)', () => {
+  // Backend now injects warning into prompt instead of returning 503
+  // Frontend no longer needs to handle ocMissing 503 specially
+  assert.ok(SRC.includes('OC DATA UNAVAILABLE'), 'Backend warns model instead of blocking');
+  assert.ok(!SRC.includes("status(503).json({\n      error: `Data unavailable"), 'Hard-block 503 must be removed');
 });
 
 test('12.04 — Manual ANALYSE NOW still works from 9:15 (not gated)', () => {

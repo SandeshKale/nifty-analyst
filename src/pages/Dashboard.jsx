@@ -510,11 +510,9 @@ export default function Dashboard() {
       if (!res.ok) {
         const detail = JSON.stringify(data, null, 2)
         setErrDetail(`HTTP ${res.status}\n${detail}`)
-        // 503 with ocMissing = data gap, not a real error — skip silently in auto-analysis
-        if (res.status === 503 && data?.ocMissing) {
-          console.warn('[auto] OC data gap — skipping cycle:', data.error)
-          setErr(data.error || 'Option chain data gap — skipping cycle')
-          return  // do not throw — auto-analysis continues at next interval
+        // 503 errors — log but continue (auto-analysis retries next interval)
+        if (res.status === 503) {
+          console.warn('[auto] 503 —', data?.error)
         }
         throw new Error(data.error||`API error (${res.status})`)
       }

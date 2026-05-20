@@ -370,24 +370,24 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
     nxAtmCeP=nxAtmRow.CE?.lastPrice||0; nxAtmPeP=nxAtmRow.PE?.lastPrice||0;
   }
 
-  // ── OC data quality guard ────────────────────────────────────────────────
-  // If BOTH NSE and Yahoo failed to produce non-zero premiums, analysis is
-  // meaningless — block with a clear error rather than sending Rs0 to the AI
+  // ── OC data quality — warn, never block ──────────────────────────────────
+  // NSE blocks option chain requests from non-India IPs (incl. Singapore/Vercel).
+  // Yahoo options also frequently stale at open. Rather than returning 503 and
+  // blocking the user, we flag it clearly in the prompt so the AI can still
+  // score the 7 non-OC factors (F1/F3/F4/F5/F6/F7/F8/F11) and give a
+  // directional read while explicitly marking F2/F9 as unavailable.
   const ocMissing = atmCeP === 0 && atmPeP === 0;
   if (ocMissing) {
     const earlyMins = istMins - (9*60+15);
-    const isEarlySession = earlyMins < 15; // first 15 min — OC may not have populated
-    const reason = isEarlySession
-      ? `Option chain not yet populated (${earlyMins} min after open). Retry after 9:30 IST.`
-      : 'Option chain data unavailable from both NSE and Yahoo Finance. Retry in 1–2 min.';
-    console.warn('[oc-guard] atmCeP=0 atmPeP=0 —', reason);
-    return res.status(503).json({
-      error: `Data unavailable: ${reason}`,
-      ocMissing: true,
-      retryAfterSec: isEarlySession ? (15 - earlyMins) * 60 : 90,
-    });
+    const ocNote = earlyMins < 15
+      ? `⚠️ OC DATA PENDING (${earlyMins}min after open) — ATM premiums not yet available. Score F2/F9 as 0. Use other factors only.`
+      : '⚠️ OC DATA UNAVAILABLE — NSE option chain blocked (Singapore→NSE CDN issue). Score F2/F9 as 0. Provide directional read from F1/F3/F4/F5/F7/F8/F11 only. Do NOT say STAY OUT solely because of missing OC.';
+    console.warn('[oc-guard]', ocNote.slice(0,80));
+    // Inject the warning into the OC table so the model sees it prominently
+    ocTable = ocNote + '\n' + ocTable;
+  } else {
+    console.log(`[oc-guard] ok — atmCeP=${atmCeP} atmPeP=${atmPeP} pcr=${pcr} src=${nseSrc}`);
   }
-  console.log(`[oc-guard] ok — atmCeP=${atmCeP} atmPeP=${atmPeP} pcr=${pcr} src=${nseSrc}`);
 
   // ── FII/DII data (Opp 4 — live F6) ──────────────────────────────────────
   // NSE endpoint: /api/fiidiiTradeReact — returns today's FII equity buy/sell
