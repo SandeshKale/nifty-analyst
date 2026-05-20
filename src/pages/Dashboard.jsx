@@ -195,6 +195,10 @@ export default function Dashboard() {
   const [autoIntervalMin, setAutoIntervalMin] = useState(10)
   const [apiLog,          setApiLog]          = useState([])   // dev console
   const [showConsole,     setShowConsole]      = useState(false)
+  const [darkMode,        setDarkMode]        = useState(true)   // default dark
+  const [lastAnalysisTime, setLastAnalysisTime] = useState(null) // IST time of last analysis
+  const [lastPrompt,      setLastPrompt]      = useState(null)   // prompt sent to AI
+  const [showPrompt,      setShowPrompt]      = useState(false)  // expand prompt panel
   // Rule 1 & 9: Capital tracking
   const [startCapital,    setStartCapital]    = useState(null)
   // Rule 5: OI flip-flop
@@ -525,6 +529,11 @@ export default function Dashboard() {
       setResult(data)
       if (data.usedModel)   setLastModel(data.usedModel)
       if (data.routingTier) setLastTier(data.routingTier)
+      // Capture analysis timestamp (IST)
+      const istNow = new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}))
+      setLastAnalysisTime(istNow.toLocaleTimeString('en-IN',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}))
+      // Capture prompt if returned by backend
+      if (data.promptPreview) setLastPrompt(data.promptPreview)
       // Rule 1: Set starting capital on first analysis
       if (!startCapital && data.marketData?.liveF > 0) setStartCapital(data.marketData.liveF)
 
@@ -625,10 +634,10 @@ export default function Dashboard() {
   const sc      = result?.scores    ?? {}
   const mktOpen = isMarketOpen()
 
-  const card = {background:'#0D0D1C',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,padding:'14px 16px',margin:'8px 12px'}
+  const card = {background:'var(--card,#0D0D1C)',border:'1px solid var(--bdr,rgba(255,255,255,0.07))',borderRadius:12,padding:'14px 16px',margin:'8px 12px'}
   const lbl  = {fontSize:10,color:'#4B5563',letterSpacing:'0.09em',textTransform:'uppercase',fontWeight:700}
   const mono = {fontFamily:"'Courier New',monospace"}
-  const sec  = {fontSize:10,color:'#374151',letterSpacing:'0.12em',textTransform:'uppercase',fontWeight:700,paddingBottom:6}
+  const sec  = {fontSize:10,color:'var(--txt3,#374151)',letterSpacing:'0.12em',textTransform:'uppercase',fontWeight:700,paddingBottom:6}
 
   return (
     <div style={{minHeight:'100vh',background:'#07070F',color:'#E0E0F0',fontFamily:"'Segoe UI','SF Pro Display',sans-serif",paddingBottom:80,maxWidth:520,margin:'0 auto'}}>
@@ -672,7 +681,15 @@ export default function Dashboard() {
               </div>
               <div style={{fontSize:10,color:'#374151',marginTop:1}}>{result?.sgt??'—'}</div>
             </div>
-            <button onClick={logout} style={{fontSize:11,color:'#374151',background:'none',border:'1px solid rgba(255,255,255,0.06)',borderRadius:6,padding:'4px 8px',cursor:'pointer'}}>Logout</button>
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              <button onClick={()=>setDarkMode(p=>!p)}
+                title={darkMode?'Switch to light mode':'Switch to dark mode'}
+                style={{fontSize:14,background:'none',border:'1px solid var(--bdr,rgba(255,255,255,0.06))',
+                  borderRadius:6,padding:'3px 7px',cursor:'pointer',color:'var(--txt3,#6B7280)',lineHeight:1}}>
+                {darkMode?'☀️':'🌙'}
+              </button>
+              <button onClick={logout} style={{fontSize:11,color:'var(--txt3,#374151)',background:'none',border:'1px solid var(--bdr,rgba(255,255,255,0.06))',borderRadius:6,padding:'4px 8px',cursor:'pointer'}}>Logout</button>
+            </div>
           </div>
         </div>
       </div>
@@ -953,7 +970,7 @@ export default function Dashboard() {
         </div>
         <div style={{display:'flex',alignItems:'center',gap:8,marginTop:10}}>
           <span style={{fontSize:11,color:'#4B5563',flexShrink:0}}>Interval:</span>
-          {[5,10,15,20,30].map(m=>(
+          {[1,2,3,5,10,15,20,30].map(m=>(
             <button key={m} onClick={()=>!stopped&&setAutoIntervalMin(m)}
               disabled={stopped}
               style={{padding:'4px 10px',borderRadius:6,border:`1px solid ${autoIntervalMin===m?'#6366F1':'rgba(255,255,255,0.08)'}`,
@@ -1035,16 +1052,79 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* FULL ANALYSIS */}
-      {result?.analysis&&(
-        <div style={card}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-            <div style={sec}>Full Analysis</div>
-            <button onClick={()=>setShowFull(p=>!p)} style={{fontSize:11,color:'#6366F1',background:'none',border:'none',cursor:'pointer'}}>
-              {showFull?'▲ Collapse':'▼ Expand'}
-            </button>
+      {/* MODEL ATTRIBUTION + ANALYSIS */}
+      {result&&(
+        <div style={{...card,padding:0,overflow:'hidden'}}>
+          {/* Model badge row */}
+          <div style={{padding:'10px 14px',borderBottom:`1px solid var(--bdr,rgba(255,255,255,0.06))`,
+            display:'flex',flexWrap:'wrap',gap:8,alignItems:'center',justifyContent:'space-between'}}>
+            <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+              {/* Model used */}
+              {lastModel&&(
+                <span style={{padding:'3px 8px',borderRadius:5,fontSize:10,fontWeight:700,
+                  background: lastTier==='groq-free'?'rgba(16,185,129,0.15)': lastTier==='sonnet'?'rgba(99,102,241,0.15)':'rgba(245,158,11,0.15)',
+                  color: lastTier==='groq-free'?'#10B981': lastTier==='sonnet'?'#A5B4FC':'#F59E0B',
+                  border:`1px solid ${lastTier==='groq-free'?'#10B981': lastTier==='sonnet'?'#6366F1':'#F59E0B'}33`}}>
+                  {lastTier==='groq-free'?'⚡':lastTier==='sonnet'?'🧠':'🎯'} {lastModel}
+                </span>
+              )}
+              {/* Analysis time */}
+              {lastAnalysisTime&&(
+                <span style={{fontSize:10,color:'var(--txt3,#4B5563)',fontFamily:'monospace'}}>
+                  🕐 {lastAnalysisTime} IST
+                </span>
+              )}
+              {/* Routing tier */}
+              {lastTier&&(
+                <span style={{fontSize:9,color:'var(--txt3,#4B5563)',padding:'2px 6px',
+                  borderRadius:4,border:'1px solid var(--bdr,rgba(255,255,255,0.06))'}}>
+                  {lastTier}
+                </span>
+              )}
+            </div>
+            <div style={{display:'flex',gap:4}}>
+              <button onClick={()=>setShowPrompt(p=>!p)}
+                style={{fontSize:10,padding:'3px 8px',borderRadius:5,border:'1px solid var(--bdr)',
+                  background:'transparent',color:'var(--txt3)',cursor:'pointer',fontWeight:500}}>
+                {showPrompt?'▲ Prompt':'▼ Prompt'}
+              </button>
+              <button onClick={()=>setShowFull(p=>!p)}
+                style={{fontSize:10,padding:'3px 8px',borderRadius:5,border:'1px solid var(--bdr)',
+                  background:'transparent',color:'#6366F1',cursor:'pointer',fontWeight:500}}>
+                {showFull?'▲ Analysis':'▼ Analysis'}
+              </button>
+            </div>
           </div>
-          {showFull&&<pre style={{fontSize:11,color:'#9CA3AF',whiteSpace:'pre-wrap',wordBreak:'break-word',lineHeight:1.6,marginTop:6,fontFamily:'monospace',maxHeight:600,overflowY:'auto'}}>{result.analysis}</pre>}
+          {/* Prompt panel */}
+          {showPrompt&&(
+            <div style={{borderBottom:`1px solid var(--bdr,rgba(255,255,255,0.06))`}}>
+              <div style={{padding:'6px 14px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span style={{fontSize:10,fontWeight:600,color:'var(--txt3)',textTransform:'uppercase',letterSpacing:'.06em'}}>Prompt sent to model</span>
+                <span style={{fontSize:9,color:'var(--txt3)'}}>~{lastPrompt?Math.round(lastPrompt.length/4):0} tokens est.</span>
+              </div>
+              <pre style={{fontSize:10,color:'var(--txt2,#9CA3AF)',whiteSpace:'pre-wrap',wordBreak:'break-word',
+                lineHeight:1.55,padding:'0 14px 12px',fontFamily:'monospace',maxHeight:400,overflowY:'auto',margin:0}}>
+                {lastPrompt||'Prompt not yet available — run an analysis first'}
+              </pre>
+            </div>
+          )}
+          {/* Full analysis panel */}
+          {showFull&&(
+            <div style={{padding:'8px 14px 12px'}}>
+              <div style={{fontSize:10,fontWeight:600,color:'var(--txt3)',textTransform:'uppercase',
+                letterSpacing:'.06em',marginBottom:6}}>Full Analysis</div>
+              <pre style={{fontSize:11,color:'var(--txt2,#9CA3AF)',whiteSpace:'pre-wrap',wordBreak:'break-word',
+                lineHeight:1.6,fontFamily:'monospace',maxHeight:600,overflowY:'auto',margin:0}}>
+                {result.analysis}
+              </pre>
+            </div>
+          )}
+          {/* Collapsed state — show section label */}
+          {!showFull&&!showPrompt&&(
+            <div style={{padding:'8px 14px',fontSize:11,color:'var(--txt3,#4B5563)'}}>
+              FULL ANALYSIS
+            </div>
+          )}
         </div>
       )}
 
