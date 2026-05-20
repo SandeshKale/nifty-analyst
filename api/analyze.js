@@ -154,6 +154,134 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
     } catch { return null; }
   }
 
+  // ── Kite option chain builder ────────────────────────────────────────────
+  // Fetches real OC data via Kite /quote API — works from any IP globally.
+  // Steps: instruments CSV → filter NIFTY weekly expiry → batch /quote → parse.
+  // Returns same shape as NSE OC parser output.
+  async function kiteOC(spotPrice, expiryObj) {
+    try {
+      if (!spotPrice || spotPrice <= 0) return null;
+
+      // Build trading symbols for ±10 strikes around ATM (50-pt grid)
+      const atmStrike = Math.round(spotPrice / 50) * 50;
+      const strikes   = [];
+      for (let i = -10; i <= 10; i++) strikes.push(atmStrike + i * 50);
+
+      // Kite expiry format: DDMMMYY e.g. 26MAY25
+      const exp = expiryObj;
+      const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+      // Parse expiry date from dateStr (YYYY-MM-DD)
+      const [ey, em, ed] = exp.dateStr.split('-').map(Number);
+      const kiteExpStr   = `${String(ed).padStart(2,'0')}${months[em-1]}${String(ey).slice(2)}`;
+      // e.g. "26MAY25"
+
+      // Build instrument keys: NFO:NIFTY26MAY25C23400 / NFO:NIFTY26MAY25P23400
+      // Kite uses tradingsymbol format: NIFTY + DDMMMYY + CE/PE + strike (no decimals for index)
+      const instruments = [];
+      for (const st of strikes) {
+        instruments.push(`NFO:NIFTY${kiteExpStr}C${st}`);
+        instruments.push(`NFO:NIFTY${kiteExpStr}P${st}`);
+      }
+
+      // Kite /quote accepts up to 250 instruments as repeated ?i= params
+      const params = instruments.map(i => `i=${encodeURIComponent(i)}`).join('&');
+      const r = await tFetch(
+        `https://api.kite.trade/quote?${params}`,
+        { headers: kH }, 8000
+      );
+      if (!r.ok) {
+        console.warn('[kite-oc] quote failed HTTP', r.status);
+        return null;
+      }
+      const j = await r.json().catch(() => null);
+      if (!j?.data || !Object.keys(j.data).length) {
+        console.warn('[kite-oc] empty quote response');
+        return null;
+      }
+
+      // Parse into OC structure
+      const rows = {};  // strike → { ce, pe }
+      for (const [key, q] of Object.entries(j.data)) {
+        // Key: "NFO:NIFTY26MAY25C23400"
+        const isCall = key.includes('C' + String(strikes[0]).slice(0,1)) ||
+                       /[CP]\d+$/.test(key) && key.slice(-key.match(/[CP]\d+$/)[0].length,-key.match(/\d+$/)[0].length) === 'C';
+        // More reliable: check if key ends with CE or PE after stripping number
+        const sideMatch = key.match(/([CP])(\d+)$/);
+        if (!sideMatch) continue;
+        const side   = sideMatch[1] === 'C' ? 'ce' : 'pe';
+        const strike = parseInt(sideMatch[2]);
+        if (!rows[strike]) rows[strike] = { ce: null, pe: null };
+        rows[strike][side] = {
+          ltp:       q.last_price       || 0,
+          oi:        q.oi               || 0,
+          prevOi:    q.oi_day_low       || 0,   // oi_day_low ≈ prev OI (opening OI)
+          oiChg:     (q.oi || 0) - (q.oi_day_low || 0),
+          iv:        0,   // Kite quote doesn't return IV — compute from Black-Scholes if needed
+          volume:    q.volume           || 0,
+        };
+      }
+
+      if (!Object.keys(rows).length) {
+        console.warn('[kite-oc] no rows parsed');
+        return null;
+      }
+
+      // Compute PCR, walls, max pain, ATM premiums
+      let totCeOI = 0, totPeOI = 0;
+      let maxCeOI = 0, maxPeOI = 0;
+      let kCallWall = atmStrike, kPutWall = atmStrike;
+      let kAtmCeP = 0, kAtmPeP = 0;
+
+      const sortedStrikes = Object.keys(rows).map(Number).sort((a,b) => b-a);
+
+      for (const st of sortedStrikes) {
+        const { ce, pe } = rows[st];
+        if (ce) { totCeOI += ce.oi; if (ce.oi > maxCeOI) { maxCeOI = ce.oi; kCallWall = st; } }
+        if (pe) { totPeOI += pe.oi; if (pe.oi > maxPeOI) { maxPeOI = pe.oi; kPutWall  = st; } }
+      }
+
+      // Max pain
+      let kMaxPain = atmStrike, minLoss = Infinity;
+      for (const target of sortedStrikes) {
+        let loss = 0;
+        for (const st of sortedStrikes) {
+          if (target < st && rows[st].ce) loss += rows[st].ce.oi * (st - target);
+          if (target > st && rows[st].pe) loss += rows[st].pe.oi * (target - st);
+        }
+        if (loss < minLoss) { minLoss = loss; kMaxPain = target; }
+      }
+
+      // ATM premiums
+      const atmRow = rows[atmStrike];
+      kAtmCeP = atmRow?.ce?.ltp || 0;
+      kAtmPeP = atmRow?.pe?.ltp || 0;
+      const kPcr = totCeOI > 0 ? (totPeOI / totCeOI).toFixed(3) : '0';
+
+      // Build OC table string
+      let kOcTable = 'Strike | CE_LTP | CE_OI      | OI_CHG   | PE_LTP | PE_OI      | OI_CHG\n';
+      kOcTable    += '-------|--------|------------|----------|--------|------------|----------\n';
+      const fc = n => (n>=0?'+':'')+String(Math.round(n)).padStart(8);
+      for (const st of sortedStrikes) {
+        const { ce, pe } = rows[st];
+        kOcTable += `${String(st).padStart(6)} | ${String((ce?.ltp||0).toFixed(0)).padStart(6)} | ${String(ce?.oi||0).padStart(10)} | ${fc(ce?.oiChg||0)} | ${String((pe?.ltp||0).toFixed(0)).padStart(6)} | ${String(pe?.oi||0).padStart(10)} | ${fc(pe?.oiChg||0)}\n`;
+      }
+
+      console.log(`[kite-oc] ok — ${Object.keys(rows).length} strikes, atmCeP=${kAtmCeP}, atmPeP=${kAtmPeP}, pcr=${kPcr}`);
+
+      return {
+        pcr: kPcr, callWall: kCallWall, putWall: kPutWall, maxPain: kMaxPain,
+        atmCeP: kAtmCeP, atmPeP: kAtmPeP,
+        totCeOI, totPeOI, ocTable: kOcTable,
+        ivpVal: 0,   // IV not in Kite quote — keep existing IVP calc
+        src: 'Kite',
+        rows,
+      };
+    } catch(e) {
+      console.warn('[kite-oc] error:', e.message);
+      return null;
+    }
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // TWO-WAVE PARALLEL FETCH (Opp 3)
   // Wave 1 (~1s): Fast data — Kite, Yahoo spot/VIX/BN, globals
@@ -170,6 +298,10 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
   const yfOptsPromise = yfOptions('^NSEI');
   // Also start NSE FII/DII data (Opp 4 — live F6 data)
   const fiiPromise    = nseGet('/api/fiidiiTradeReact').catch(() => null);
+  // Kite OC promise — fired early, awaited after spot is known (wave 2)
+  // kiteOC needs spot price which comes from wave 1, so we build a deferred promise
+  let kiteOCResolve;
+  const kiteOCPromise = new Promise(resolve => { kiteOCResolve = resolve; });
 
   // Wave 1: fast sources — resolve in ~1-2s
   const [
@@ -194,8 +326,15 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
 
   // Wave 2: await the slow NSE sources (already running in background since line 1)
   // By now wave-1 processing + technicals have consumed ~10ms, so OC is nearly ready
-  const [ocJ, idxJ, yfOptsR, fiiJ] = await Promise.allSettled([
-    ocPromise, idxPromise, yfOptsPromise, fiiPromise,
+  // Also fire Kite OC now that we have spot price from wave 1
+  const kiteOCStarted = kiteOC(
+    gv(yIntra)?.meta?.regularMarketPrice || gv(yDaily)?.meta?.regularMarketPrice || 0,
+    getExpiry(0)
+  );
+  kiteOCResolve(kiteOCStarted);  // resolve the deferred promise
+
+  const [ocJ, idxJ, yfOptsR, fiiJ, kiteOCR] = await Promise.allSettled([
+    ocPromise, idxPromise, yfOptsPromise, fiiPromise, kiteOCPromise,
   ]);
 
   // ── Kite: margins, positions, orders ──────────────────────────────────────
@@ -282,65 +421,40 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
   const last20c= c5m.slice(-6).map(c=>`[${c[0].slice(11,16)} O:${c[1].toFixed(0)} H:${c[2].toFixed(0)} L:${c[3].toFixed(0)} C:${c[4].toFixed(0)}]`).join(' ');
   const last15d= cDay.slice(-5).map(c=>`[${c[0].slice(5,10)} O:${c[1].toFixed(0)} H:${c[2].toFixed(0)} L:${c[3].toFixed(0)} C:${c[4].toFixed(0)}]`).join(' ');
 
-  // ── NSE Option Chain ──────────────────────────────────────────────────────
+  // ── Option Chain — Priority: Kite → NSE → Yahoo ──────────────────────────
+  // Kite /quote: real-time, no geo-block, uses user's own auth token
+  // NSE: often blocked from Singapore/Vercel (geo-CDN restriction)
+  // Yahoo: stale at open, limited strikes
   let pcr='0',callWall=atm,putWall=atm,maxPain=atm,atmCeP=0,atmPeP=0,nxAtmCeP=0,nxAtmPeP=0,ivpVal=0;
   let totCeOI=0,totPeOI=0;
   let ocTable='Strike | CE_LTP | CE_OI      | OI_CHG   | PE_LTP | PE_OI      | OI_CHG\n';
   ocTable    +='-------|--------|------------|----------|--------|------------|----------\n';
-  let ocData=gv(ocJ);
-  const yfOptsData=gv(yfOptsR);
+  // OC source tracker — reuses nseSrc declared above
+  // (nseSrc already set by NSE allIndices section)
 
-  // NSE OC retry with cookie header if first attempt returned null
-  // NSE sometimes needs a prior session cookie — retry once with Accept header trick
-  if (!ocData && atm > 0) {
-    try {
-      console.log('[oc] first attempt failed — retrying NSE OC with cookie header');
-      const retryR = await tFetch(
-        `https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY`,
-        { headers: { ...nseH,
-          'Cookie': 'nsit=; nseappid=; ak_bmsc=; bm_sv=',
-          'Cache-Control': 'no-cache',
-        }}, 6000
-      );
-      if (retryR.ok) {
-        const retryJ = await retryR.json().catch(() => null);
-        if (retryJ?.records?.data?.length) {
-          ocData = retryJ;
-          console.log('[oc] retry succeeded');
-        }
-      }
-    } catch(ocRetryErr) {
-      console.warn('[oc] retry also failed:', ocRetryErr.message);
-    }
+  // ── Source 1: Kite /quote (primary — globally accessible, real-time) ─────
+  const kiteOCData = gv(kiteOCR);   // result from kiteOC() called in wave 2
+  if (kiteOCData && kiteOCData.atmCeP > 0 && atm > 0) {
+    pcr      = kiteOCData.pcr;
+    callWall = kiteOCData.callWall;
+    putWall  = kiteOCData.putWall;
+    maxPain  = kiteOCData.maxPain;
+    atmCeP   = kiteOCData.atmCeP;
+    atmPeP   = kiteOCData.atmPeP;
+    totCeOI  = kiteOCData.totCeOI;
+    totPeOI  = kiteOCData.totPeOI;
+    ocTable  = kiteOCData.ocTable;
+    ivpVal   = kiteOCData.ivpVal || ivpVal;
+    nseSrc   = 'Kite';
+    // Next expiry ATM premiums — Kite doesn't have these in this call, leave as 0
+    nxAtmCeP = 0; nxAtmPeP = 0;
+    console.log(`[oc] using Kite source — atmCeP=${atmCeP} atmPeP=${atmPeP}`);
   }
 
-  // Yahoo Finance options fallback — use when NSE option chain not available
-  if(!ocData && yfOptsData && atm>0) {
-    try {
-      const calls=yfOptsData.options?.[0]?.calls||[];
-      const puts=yfOptsData.options?.[0]?.puts||[];
-      // Get ATM call and put
-      const atmCall=calls.reduce((b,c)=>Math.abs((c.strike||0)-atm)<Math.abs((b.strike||0)-atm)?c:b,calls[0]||{});
-      const atmPut=puts.reduce((b,p)=>Math.abs((p.strike||0)-atm)<Math.abs((b.strike||0)-atm)?p:b,puts[0]||{});
-      if(atmCall.lastPrice) atmCeP=atmCall.lastPrice;
-      if(atmPut.lastPrice)  atmPeP=atmPut.lastPrice;
-      if(atmCall.impliedVolatility) ivpVal=Math.round(atmCall.impliedVolatility*100);
-      // Basic PCR from OI
-      const totCalls=calls.reduce((s,c)=>s+(c.openInterest||0),0);
-      const totPuts=puts.reduce((s,p)=>s+(p.openInterest||0),0);
-      if(totCalls>0) pcr=isNaN(totPuts/totCalls)?'0':(totPuts/totCalls).toFixed(3);
-      // Call/put walls
-      const maxCallOI=calls.reduce((b,c)=>(c.openInterest||0)>(b.openInterest||0)?c:b,{});
-      const maxPutOI=puts.reduce((b,p)=>(p.openInterest||0)>(b.openInterest||0)?p:b,{});
-      if(maxCallOI.strike) callWall=maxCallOI.strike;
-      if(maxPutOI.strike)  putWall=maxPutOI.strike;
-      ocTable='[Yahoo Finance options — limited data]\n';
-      ocTable+=`ATM ${atm} CE: Rs${atmCeP.toFixed(1)} | PE: Rs${atmPeP.toFixed(1)} | PCR: ${pcr}\n`;
-      ocTable+=`Call Wall: ${callWall} | Put Wall: ${putWall}\n`;
-    } catch { /* Yahoo options fallback */ }
-  }
-
-  if(ocData?.records?.data && atm>0){
+  // ── Source 2: NSE (fallback if Kite OC failed) ───────────────────────────
+  const ocData = gv(ocJ);
+  if (!kiteOCData?.atmCeP && ocData?.records?.data && atm > 0) {
+    nseSrc = 'NSE';
     const tExp=expiry.nseStr, nxExp=expiryNx.nseStr;
     const ocRows=ocData.records.data.filter(r=>r.expiryDate===tExp);
     const nxOcRows=ocData.records.data.filter(r=>r.expiryDate===nxExp);
@@ -368,6 +482,33 @@ async function runAnalysis(req, res, accessToken, useDeepSeek) {
     ivpVal=Math.round(atmRow.CE?.impliedVolatility||atmRow.PE?.impliedVolatility||0);
     const nxAtmRow=nxOcRows.find(r=>r.strikePrice===atm)||{};
     nxAtmCeP=nxAtmRow.CE?.lastPrice||0; nxAtmPeP=nxAtmRow.PE?.lastPrice||0;
+    console.log(`[oc] using NSE source — atmCeP=${atmCeP} atmPeP=${atmPeP}`);
+  }
+
+  // ── Source 3: Yahoo Finance options (last resort) ────────────────────────
+  const yfOptsData=gv(yfOptsR);
+  if (!atmCeP && !atmPeP && yfOptsData && atm > 0) {
+    try {
+      nseSrc = 'Yahoo';
+      const calls=yfOptsData.options?.[0]?.calls||[];
+      const puts=yfOptsData.options?.[0]?.puts||[];
+      const atmCall=calls.reduce((b,c)=>Math.abs((c.strike||0)-atm)<Math.abs((b.strike||0)-atm)?c:b,calls[0]||{});
+      const atmPut=puts.reduce((b,p)=>Math.abs((p.strike||0)-atm)<Math.abs((b.strike||0)-atm)?p:b,puts[0]||{});
+      if(atmCall.lastPrice) atmCeP=atmCall.lastPrice;
+      if(atmPut.lastPrice)  atmPeP=atmPut.lastPrice;
+      if(atmCall.impliedVolatility) ivpVal=Math.round(atmCall.impliedVolatility*100);
+      const totCalls=calls.reduce((s,c)=>s+(c.openInterest||0),0);
+      const totPuts=puts.reduce((s,p)=>s+(p.openInterest||0),0);
+      if(totCalls>0) pcr=isNaN(totPuts/totCalls)?'0':(totPuts/totCalls).toFixed(3);
+      const maxCallOI=calls.reduce((b,c)=>(c.openInterest||0)>(b.openInterest||0)?c:b,{});
+      const maxPutOI=puts.reduce((b,p)=>(p.openInterest||0)>(b.openInterest||0)?p:b,{});
+      if(maxCallOI.strike) callWall=maxCallOI.strike;
+      if(maxPutOI.strike)  putWall=maxPutOI.strike;
+      ocTable='[Yahoo Finance options — limited data]\n';
+      ocTable+=`ATM ${atm} CE: Rs${atmCeP.toFixed(1)} | PE: Rs${atmPeP.toFixed(1)} | PCR: ${pcr}\n`;
+      ocTable+=`Call Wall: ${callWall} | Put Wall: ${putWall}\n`;
+      console.log(`[oc] using Yahoo source — atmCeP=${atmCeP} atmPeP=${atmPeP}`);
+    } catch { /* Yahoo options fallback silent */ }
   }
 
   // ── OC data quality — warn, never block ──────────────────────────────────

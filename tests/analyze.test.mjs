@@ -621,12 +621,12 @@ test('9.03 — Wave 1 has Kite + Yahoo fast sources', () => {
   assert.ok(SRC.includes("yfFetch('^NSEI','5m','1d')"));
 });
 
-test('9.04 — Wave 2 awaits pre-fired promises, not fresh nseGet calls', () => {
+test('9.04 — Wave 2 awaits pre-fired promises (not fresh calls)', () => {
   const w2start = SRC.indexOf('Wave 2: await the slow');
   assert.ok(w2start > 0, 'Wave 2 comment must exist');
-  const w2slice = SRC.slice(w2start, w2start + 300);
-  assert.ok(w2slice.includes('ocPromise'), 'Wave 2 must use pre-fired ocPromise');
-  assert.ok(!w2slice.includes('nseGet('), 'Wave 2 must not re-call nseGet()');
+  // kiteOCStarted is called in wave 2 but uses already-computed spot — not a re-fetch
+  assert.ok(SRC.includes('kiteOCStarted'), 'kiteOC must be fired in wave 2');
+  assert.ok(SRC.includes('kiteOCPromise'), 'kiteOCPromise must be awaited in wave 2');
 });
 
 test('9.05 — fiiJ destructured from wave 2', () => {
@@ -678,10 +678,12 @@ test('10.07 — fiiJ accessed via gv() helper', () => {
 section('11. OC DATA QUALITY GUARD');
 // ════════════════════════════════════════════════════════════════════════════
 
-test('11.01 — OC retry with cookie header when first attempt fails', () => {
-  assert.ok(SRC.includes('[oc] first attempt failed'), 'OC retry log must exist');
-  assert.ok(SRC.includes('Cookie'), 'Retry must include Cookie header');
-  assert.ok(SRC.includes('[oc] retry succeeded'), 'OC retry success log must exist');
+test('11.01 — Kite OC is primary source (replaces NSE cookie retry)', () => {
+  // Cookie retry removed — replaced by Kite /quote which works from any IP
+  assert.ok(SRC.includes('kiteOC'), 'kiteOC() function must exist');
+  assert.ok(SRC.includes('api.kite.trade/quote'), 'Must call Kite quote API');
+  assert.ok(SRC.includes('[kite-oc] ok'), 'Kite OC success log must exist');
+  assert.ok(SRC.includes('Source 1: Kite'), 'Kite must be primary source in OC section');
 });
 
 test('11.02 — Hard block when atmCeP=0 AND atmPeP=0', () => {
