@@ -351,14 +351,20 @@ export default function Dashboard() {
     const fomoCheck = checkFomoCooldown(tradeDir)
     if (fomoCheck.blocked) { setOrderMsg(fomoCheck.reason); return false }
 
-    // Rule 3: σ-based strike validation
+    // Rule 3: Symbol + strike validation
     const sym  = mode==='swing' ? (r.swingSymbol||r.quickSymbol) : (r.quickSymbol||r.swingSymbol)
+
+    // If verdict is STAY OUT, no symbol is expected — fail silently, not with a warning
+    const isStayOut = !r.verdict || r.verdict.toUpperCase().includes('STAY OUT')
+    if (!sym) {
+      if (!isStayOut) setOrderMsg('⚠️ No symbol in analysis — cannot trade')
+      return false
+    }
+
     const strikeCheck = validateStrike(sym, md.spot, md.vix)
     if (!strikeCheck.ok) { setOrderMsg(`⚠️ ${strikeCheck.reason}`); return false }
 
     const entH = mode==='swing' ? (r.swingEntryH||r.quickEntryH) : (r.quickEntryH||r.swingEntryH)
-
-    if (!sym)  { setOrderMsg('⚠️ No symbol in analysis — cannot trade'); return false }
     if (!entH) { setOrderMsg('⚠️ No entry premium in analysis — cannot trade'); return false }
 
     // Fix 5: Funds check before order
@@ -572,6 +578,8 @@ export default function Dashboard() {
       }
 
       setResult(data)
+      // Clear stale order messages when a fresh analysis arrives with STAY OUT
+      if (data.verdict?.toUpperCase().includes('STAY OUT')) setOrderMsg(null)
       if (data.usedModel)   setLastModel(data.usedModel)
       if (data.routingTier) setLastTier(data.routingTier)
       // Capture analysis timestamp (IST)
@@ -787,7 +795,7 @@ export default function Dashboard() {
         ))}
       </div>}
       <div style={{...card,display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8}}>
-        <StatCard label="PCR" value={md.pcr??'—'} color={parseFloat(md.pcr)<0.8?'#EF4444':'#10B981'} small/>
+        <StatCard label="PCR" value={!md.pcr||md.pcr==='0'?'—':md.pcr} color={!md.pcr||md.pcr==='0'?'#4B5563':parseFloat(md.pcr)<0.8?'#EF4444':'#10B981'} small/>
         <StatCard label="ATM" value={md.atm?fI(md.atm):'—'} small/>
         <StatCard label="EXPIRY" value={md.expiry?.slice(5)??'—'} sub={md.dte!=null?`${md.dte} DTE${md.isExpiry?' ⚠️ EXPIRY':''}`:''}
           color={md.isExpiry?'#EF4444':'#E8E8F8'} small/>
