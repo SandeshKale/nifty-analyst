@@ -1172,10 +1172,10 @@ export default function Dashboard() {
             <div style={{borderBottom:`1px solid var(--bdr,rgba(255,255,255,0.06))`}}>
               <div style={{padding:'6px 14px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <span style={{fontSize:10,fontWeight:600,color:'var(--txt3)',textTransform:'uppercase',letterSpacing:'.06em'}}>Prompt sent to model</span>
-                <span style={{fontSize:9,color:'var(--txt3)'}}>~{lastPrompt?Math.round(lastPrompt.length/4):0} tokens est.</span>
+                <span style={{fontSize:9,color:'var(--txt3)'}}>~{lastPrompt?Math.round(lastPrompt.length/4).toLocaleString():0} tokens · {lastPrompt?lastPrompt.length.toLocaleString():0} chars</span>
               </div>
               <pre style={{fontSize:10,color:'var(--txt2,#9CA3AF)',whiteSpace:'pre-wrap',wordBreak:'break-word',
-                lineHeight:1.55,padding:'0 14px 12px',fontFamily:'monospace',maxHeight:400,overflowY:'auto',margin:0}}>
+                lineHeight:1.55,padding:'0 14px 12px',fontFamily:'monospace',overflowY:'visible',margin:0}}>
                 {lastPrompt||'Prompt not yet available — run an analysis first'}
               </pre>
             </div>
@@ -1186,7 +1186,7 @@ export default function Dashboard() {
               <div style={{fontSize:10,fontWeight:600,color:'var(--txt3)',textTransform:'uppercase',
                 letterSpacing:'.06em',marginBottom:6}}>Full Analysis</div>
               <pre style={{fontSize:11,color:'var(--txt2,#9CA3AF)',whiteSpace:'pre-wrap',wordBreak:'break-word',
-                lineHeight:1.6,fontFamily:'monospace',maxHeight:600,overflowY:'auto',margin:0}}>
+                lineHeight:1.6,fontFamily:'monospace',overflowY:'visible',margin:0}}>
                 {result.analysis}
               </pre>
             </div>

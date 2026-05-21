@@ -895,7 +895,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
     entryLow:quickEntryL,entryHigh:quickEntryH,
     scores,lotsStr,ivpVal,
     analysis:analysisText,
-    promptPreview:prompt ? prompt.slice(0, 4000) + (prompt.length > 4000 ? '\n…[truncated]' : '') : null,
+    promptPreview:prompt || null,   // full prompt — no truncation
     marketData:{
       spot,vix,bn,liveF,atm,
       expiry:expiry.dateStr,dte:expiry.dte,isExpiry:expiry.isExpiry,
