@@ -22,6 +22,9 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
     const accessToken = body.accessToken;
+    // kiteApiKey: optional override for users with their own Kite developer app
+    // Sandesh: uses process.env.KITE_API_KEY (default)
+    // Omkar: sends his own OMKAR_KITE_API_KEY stored in omkar_api_key localStorage
     const useDeepSeek = body.useDeepSeek || false;  // Toggle for model selection
     
     if (!accessToken) {
@@ -52,7 +55,9 @@ export default async function handler(req, res) {
 async function runAnalysis(req, res, accessToken, useDeepSeek) {
 
 
-  const apiKey = process.env.KITE_API_KEY;
+  // Use caller's API key if provided (Omkar uses his own), else fall back to Sandesh's
+  const apiKey = body.kiteApiKey || process.env.KITE_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'No Kite API key configured' });
   const kH = { 'Authorization': `token ${apiKey}:${accessToken}`, 'X-Kite-Version': '3' };
 
   const now = new Date();

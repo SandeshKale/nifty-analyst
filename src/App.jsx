@@ -1,7 +1,10 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import Login    from './pages/Login.jsx'
-import Callback from './pages/Callback.jsx'
-import Dashboard from './pages/Dashboard.jsx'
+import Login          from './pages/Login.jsx'
+import Callback       from './pages/Callback.jsx'
+import Dashboard      from './pages/Dashboard.jsx'
+import OmkarLogin     from './pages/OmkarLogin.jsx'
+import OmkarCallback  from './pages/OmkarCallback.jsx'
+import OmkarDashboard from './pages/OmkarDashboard.jsx'
 
 // ── Multi-user auth helpers ───────────────────────────────────────────────
 // All user data is namespaced by Zerodha userId (e.g. AB1234).
@@ -63,10 +66,17 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Sandesh's routes */}
         <Route path="/login"    element={<Login />} />
         <Route path="/callback" element={<Callback />} />
         <Route path="/"         element={<RequireAuth><Dashboard /></RequireAuth>} />
-        <Route path="*"         element={<Navigate to="/" replace />} />
+
+        {/* Omkar's routes — completely separate Kite app + credentials */}
+        <Route path="/omkar"             element={<OmkarLogin />} />
+        <Route path="/omkar/callback"    element={<OmkarCallback />} />
+        <Route path="/omkar/dashboard"   element={<OmkarDashboard />} />
+
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   )

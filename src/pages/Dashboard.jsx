@@ -166,7 +166,7 @@ function SetupCard({title,color,symbol,entryL,entryH,sl,target,target2,lots,live
 }
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-export default function Dashboard() {
+export default function Dashboard({ omkarMode = false } = {}) {
   const navigate  = useNavigate()
   const [result,      setResult]      = useState(null)
   const [busy,        setBusy]        = useState(false)
@@ -281,11 +281,26 @@ export default function Dashboard() {
   const uid         = activeUser()
   const accessToken = activeToken()
   const userName    = (uid ? localStorage.getItem(`kite_user_name_${uid}`) : null) || 'Trader'
+  // kiteApiKey: each user may have their own Kite developer app (e.g. Omkar)
+  // Stored as kite_api_key_{uid} by OmkarDashboard bridge; blank = use server default
+  const kiteApiKey  = uid ? (localStorage.getItem(`kite_api_key_${uid}`) || '') : ''
   const [accounts,  setAccounts]  = useState(() => knownUsers())
   // totalCost now accumulated per-model in state (Groq calls = ₹0)
   const cpc         = calls>0?totalCost/calls:0
 
-  const logout  = () => logoutUser(uid)
+  const logout  = () => {
+    if (omkarMode) {
+      // Clear Omkar's keys and redirect to his login
+      localStorage.removeItem('omkar_access_token')
+      localStorage.removeItem('omkar_token_expiry')
+      localStorage.removeItem('omkar_user_id')
+      localStorage.removeItem('omkar_api_key')
+      logoutUser(uid)
+      window.location.href = '/omkar'
+    } else {
+      logoutUser(uid)
+    }
+  }
   const refresh = () => setAccounts(knownUsers())
 
   // ── Rule helpers ──────────────────────────────────────────────────────────
@@ -531,7 +546,7 @@ export default function Dashboard() {
       setApiLog(l=>[{ts:callTs,type:'→ REQUEST',msg:'POST /api/analyze',status:'pending',color:'#6366F1'},...l.slice(0,49)])
       const res  = await fetch('/api/analyze',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({accessToken, useDeepSeek})
+        body:JSON.stringify({accessToken, useDeepSeek, kiteApiKey: kiteApiKey||undefined})
       })
       // Guard: Vercel returns HTML on 504/502 — res.json() would throw
       const rawText = await res.text()

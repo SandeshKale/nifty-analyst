@@ -861,7 +861,7 @@ test('13.15 — Dashboard shows account switcher when multiple accounts active',
 });
 
 test('13.16 — Dashboard logout uses logoutUser(uid) not localStorage.clear()', () => {
-  assert.ok(DASH_SRC.includes('const logout  = () => logoutUser(uid)'), 
+  assert.ok(DASH_SRC.includes('logoutUser(uid)'), 
     'Logout must call logoutUser(uid)');
   assert.ok(!DASH_SRC.includes('localStorage.clear()'), 
     'Must NOT clear all localStorage (breaks other accounts)');
