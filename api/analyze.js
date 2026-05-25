@@ -679,11 +679,18 @@ AUTO-TRADE: [YES - CE/PE / NO]
   //   |score| <= 7   → Claude Opus 4.6    (grey zone, deep reasoning required)
   // useDeepSeek toggle overrides routing (legacy UI support)
   function selectModel(compositeScore) {
+    // ── ANTHROPIC TEMPORARILY DISABLED (credits exhausted) ──────────────────
+    // All traffic routed to Groq free tier until credits are topped up.
+    // Re-enable by removing the first two return lines below.
+    // Original routing: |>=12|→Groq, |8-11|→Sonnet, |<=7|→Opus
+    if (true) return { provider: 'groq', model: 'llama-3.3-70b-versatile', tier: 'groq-free' };
+    /* eslint-disable no-unreachable */
     if (useDeepSeek) return { provider: 'groq', model: 'llama-3.3-70b-versatile', tier: 'groq-free' };
     const abs = Math.abs(compositeScore || 0);
     if (abs >= 12) return { provider: 'groq',      model: 'llama-3.3-70b-versatile', tier: 'groq-free'   };
     if (abs >= 8)  return { provider: 'anthropic',  model: 'claude-sonnet-4-6',       tier: 'sonnet'      };
     return             { provider: 'anthropic',  model: 'claude-opus-4-6',         tier: 'opus'        };
+    /* eslint-enable no-unreachable */
   }
 
   // ── Opp 1: Rule-based pre-scorer for model routing ─────────────────────
@@ -813,24 +820,30 @@ AUTO-TRADE: [YES - CE/PE / NO]
     } catch(primaryErr) {
       console.warn(`[fallback] ${primary.tier} failed: ${primaryErr.message}`);
 
-      // If primary was Groq → fallback to Sonnet
+      // ── ANTHROPIC DISABLED — Groq-only fallback ─────────────────────────
+      // Anthropic fallbacks disabled while credits are exhausted.
+      // Re-enable by restoring the original fallback chain below.
+      // If Groq fails, retry once with a short delay then throw.
       if (primary.provider === 'groq') {
+        console.log('[fallback] Groq failed — retrying Groq once (Anthropic disabled)');
+        await new Promise(r => setTimeout(r, 2000));  // 2s pause before retry
         try {
-          console.log('[fallback] Groq failed → trying Claude Sonnet 4.6');
-          const result = await callProvider('anthropic', 'claude-sonnet-4-6');
-          if (!result.text) throw new Error('Sonnet fallback also empty');
+          const result = await callProvider('groq', 'llama-3.3-70b-versatile');
+          if (!result.text) throw new Error('Groq retry also empty');
           return result;
-        } catch(sonnetErr) {
-          console.warn(`[fallback] Sonnet also failed: ${sonnetErr.message}`);
+        } catch(retryErr) {
+          console.warn('[fallback] Groq retry failed:', retryErr.message);
         }
       }
-
-      // Final fallback: Sonnet (if primary was Opus) or Opus (if Sonnet was primary)
-      const finalModel = primary.model === 'claude-sonnet-4-6' ? 'claude-opus-4-6' : 'claude-sonnet-4-6';
-      console.log(`[fallback] final attempt → ${finalModel}`);
-      const result = await callProvider('anthropic', finalModel);
-      if (!result.text) throw new Error('All fallbacks exhausted — no AI response');
-      return result;
+      // Original Anthropic fallbacks (re-enable when credits topped up):
+      // if (primary.provider === 'groq') {
+      //   const result = await callProvider('anthropic', 'claude-sonnet-4-6');
+      //   return result;
+      // }
+      // const finalModel = primary.model === 'claude-sonnet-4-6' ? 'claude-opus-4-6' : 'claude-sonnet-4-6';
+      // const result = await callProvider('anthropic', finalModel);
+      // return result;
+      throw new Error('All fallbacks exhausted — no AI response');
     }
   }
 
