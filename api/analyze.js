@@ -637,6 +637,7 @@ PENDING ORDERS: ${ordText}
 FII/DII: ${fiiText}
 
 MANDATORY STAY OUT if: VIX>22 | spot=0 | expiry day score -5 to +5 | insufficient margin
+MANDATORY ENTRY if: |total score| >= 12 AND VIX<22 AND spot>0 — do NOT output STAY OUT at this score level regardless of DTE or other factors
 
 SCORECARD — output EXACTLY this JSON block first (integers only, no spaces around colon):
 SCORES:{"f1":0,"f2":0,"f3":0,"f4":0,"f5":0,"f6":0,"f7":0,"f8":0,"f9":0,"f10":0,"f11":0,"total":0}
@@ -655,10 +656,12 @@ F10 Events:    [score]  [event or "none"]      — [impact]
 F11 Sentiment: [score]  [sentiment signal]     — [fear/greed read]
 TOTAL: XX / ±33
 
-VERDICT FORMAT (include both):
-QUICK SETUP (+15-20 premium pts): VERDICT: [ENTRY CE/PE / STAY OUT] | Option: [symbol] | Entry: Rs[X] | SL: Rs[X] | Target: Rs[X]
-SWING SETUP (+100 premium pts):   VERDICT: [ENTRY CE/PE / STAY OUT] | Option: [symbol] | Entry: Rs[X] | SL: Rs[X] | T1: Rs[X] | T2: Rs[X]
+VERDICT FORMAT (include both — use EXACTLY this format, no markdown, no bold):
+QUICK SETUP (+15-20 premium pts): VERDICT: [ENTRY CE/PE / STAY OUT] | Option: NIFTY26MAY24000CE | Entry: Rs74 | SL: Rs37 | Target: Rs94
+SWING SETUP (+100 premium pts):   VERDICT: [ENTRY CE/PE / STAY OUT] | Option: NIFTY26MAY24000CE | Entry: Rs74 | SL: Rs37 | T1: Rs120 | T2: Rs160
 
+RULES for symbol: no spaces, no markdown — e.g. NIFTY26MAY24000CE not NIFTY 26MAY 24000 CE
+RULES for entry: single number only — e.g. Rs74 not Rs74-80 or Rs74–Rs80
 AUTO-TRADE: [YES - CE/PE / NO]
 
 91% of retail F&O traders lost money FY2024-25 (SEBI). Not SEBI-registered advice.`;
@@ -871,18 +874,20 @@ AUTO-TRADE: [YES - CE/PE / NO]
   const score    = fi(/TOTAL:\s*([+-]?\d+)/i);
   const verdict  = ft(/\bVERDICT:\s*([^\n|]{3,40})/i);
   const autoTrade= ft(/AUTO.?TRADE.*?:\s*(YES[^\n]*|NO[^\n]*)/i);
-  const quickSymM= analysisText.match(/QUICK SETUP[\s\S]*?Option:\s*([A-Z0-9]+)/i);
-  const quickSymbol=quickSymM?quickSymM[1].replace(/[^A-Z0-9]/g,''):null;
-  const quickEntryM=analysisText.match(/QUICK SETUP[\s\S]*?Entry:\s*Rs([\d.]+)/i);
+  const quickSymM= analysisText.match(/QUICK SETUP[\s\S]*?Option:\s*([\*`]*)([A-Z0-9][A-Z0-9 ]{4,30}?)([\*`]*)(\s*\|)/i);
+  const quickSymbol=quickSymM?(quickSymM[2]||quickSymM[1]).replace(/[^A-Z0-9]/g,''):null;
+  const quickEntryM=analysisText.match(/QUICK SETUP[\s\S]*?Entry:\s*Rs([\d.]+)(?:[–\-]Rs?([\d.]+))?/i);
   const quickEntryL=quickEntryM?parseFloat(quickEntryM[1]):null;
-  const quickEntryH=quickEntryL?quickEntryL*1.02:null;
+  const quickEntryH=quickEntryM?parseFloat(quickEntryM[2]||quickEntryM[1]*1.02):null;
   const quickSlM=analysisText.match(/QUICK SETUP[\s\S]*?SL:\s*Rs([\d.]+)/i);
-  const quickSl=quickSlM?parseFloat(quickSlM[1]):null;
-  const swingSymM=analysisText.match(/SWING SETUP[\s\S]*?Option:\s*([A-Z0-9]+)/i);
-  const swingSymbol=swingSymM?swingSymM[1].replace(/[^A-Z0-9]/g,''):null;
-  const swingEntryM=analysisText.match(/SWING SETUP[\s\S]*?Entry:\s*Rs([\d.]+)/i);
+  const quickSl=quickSlM?parseFloat(quickSlM[1]):null;  // SL: use lower bound
+  const quickTargetM=analysisText.match(/QUICK SETUP[\s\S]*?Target:\s*Rs([\d.]+)/i);
+  const quickTarget=quickTargetM?parseFloat(quickTargetM[1]):null;
+  const swingSymM=analysisText.match(/SWING SETUP[\s\S]*?Option:\s*([\*`]*)([A-Z0-9][A-Z0-9 ]{4,30}?)([\*`]*)(\s*\|)/i);
+  const swingSymbol=swingSymM?(swingSymM[2]||swingSymM[1]).replace(/[^A-Z0-9]/g,''):null;
+  const swingEntryM=analysisText.match(/SWING SETUP[\s\S]*?Entry:\s*Rs([\d.]+)(?:[–\-]Rs?([\d.]+))?/i);
   const swingEntryL=swingEntryM?parseFloat(swingEntryM[1]):null;
-  const swingEntryH=swingEntryL?swingEntryL*1.02:null;
+  const swingEntryH=swingEntryM?parseFloat(swingEntryM[2]||swingEntryM[1]*1.02):null;
   const swingSlM=analysisText.match(/SWING SETUP[\s\S]*?SL:\s*Rs([\d.]+)/i);
   const swingSl=swingSlM?parseFloat(swingSlM[1]):null;
   // Parse machine-readable SCORES JSON block
@@ -910,7 +915,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
 
   return res.status(200).json({
     score,verdict,autoTrade,
-    quickSymbol,quickEntryL,quickEntryH,quickSl,
+    quickSymbol,quickEntryL,quickEntryH,quickSl,quickTarget,
     swingSymbol,swingEntryL,swingEntryH,swingSl,
     entryLow:quickEntryL,entryHigh:quickEntryH,
     scores,lotsStr,ivpVal,

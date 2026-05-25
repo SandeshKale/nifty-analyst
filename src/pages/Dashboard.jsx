@@ -142,24 +142,53 @@ function StatCard({label,value,sub,color='#E8E8F8',small=false}) {
 
 function SetupCard({title,color,symbol,entryL,entryH,sl,target,target2,lots,liveF}) {
   if (!symbol) return null
-  const premium = entryH||0
-  const slPremium = sl || premium*0.5
-  const lossPerLot = (slPremium*LOT_SIZE).toFixed(0)
-  const profitPerLot = (premium*0.8*LOT_SIZE).toFixed(0)
+  const premium    = entryH || entryL || 0
+  const entryShow  = entryL && entryH && entryL !== entryH
+    ? `₹${entryL.toFixed(0)}–₹${entryH.toFixed(0)}`
+    : `₹${(entryL||entryH||0).toFixed(0)}`
+  const slPremium  = sl || premium * 0.5
+  const lossPerLot = (slPremium * LOT_SIZE).toFixed(0)
+  const profitPerLot = target
+    ? ((target - premium) * LOT_SIZE).toFixed(0)
+    : (premium * 0.8 * LOT_SIZE).toFixed(0)
+  // Parse strike from symbol e.g. NIFTY26MAY24000CE → 24000 CE
+  const strikeMatch = symbol.match(/(\d{4,6})(CE|PE)$/i)
+  const strikeDisp  = strikeMatch ? `${parseInt(strikeMatch[1]).toLocaleString()} ${strikeMatch[2].toUpperCase()}` : symbol
   return (
     <div style={{background:`${color}0D`,border:`1px solid ${color}30`,borderRadius:10,padding:'12px 14px',marginTop:8}}>
-      <div style={{fontSize:12,fontWeight:800,color,letterSpacing:'0.08em',marginBottom:8}}>{title}</div>
-      <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
+      <div style={{fontSize:12,fontWeight:800,color,letterSpacing:'0.08em',marginBottom:10}}>{title}</div>
+
+      {/* Symbol + strike display */}
+      <div style={{marginBottom:8}}>
         <span style={{background:`${color}20`,color,border:`1px solid ${color}45`,
-          padding:'3px 10px',borderRadius:5,fontSize:13,fontWeight:800,fontFamily:'monospace'}}>{symbol}</span>
-        <span style={{fontSize:11,color:'#6B7280'}}>Entry ₹{entryL?.toFixed(0)}–₹{entryH?.toFixed(0)}</span>
-        {lots&&<span style={{fontSize:11,color:'#F59E0B'}}>Qty: {lots} lot{lots>1?'s':''}</span>}
+          padding:'4px 12px',borderRadius:6,fontSize:13,fontWeight:800,fontFamily:'monospace',
+          letterSpacing:'0.04em',display:'inline-block',marginBottom:4}}>{symbol}</span>
+        <div style={{fontSize:11,color:'#6B7280',marginTop:2}}>Strike: <span style={{color,fontWeight:600}}>{strikeDisp}</span></div>
       </div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4,fontSize:11}}>
-        <div style={{color:'#EF4444'}}>SL: ₹{slPremium.toFixed(0)} (50%) → loss ₹{lossPerLot}</div>
-        <div style={{color:'#10B981'}}>T1: +80% → profit ₹{profitPerLot}</div>
-        {target&&<div style={{color:'#6B7280'}}>Nifty T1: {fI(target)}</div>}
-        {target2&&<div style={{color:'#34D399'}}>T2: +150% trail</div>}
+
+      {/* Entry / SL / Target grid */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:6}}>
+        <div style={{background:'rgba(255,255,255,0.04)',borderRadius:6,padding:'6px 8px',textAlign:'center'}}>
+          <div style={{fontSize:9,color:'#6B7280',marginBottom:2,textTransform:'uppercase',letterSpacing:'.06em'}}>Entry</div>
+          <div style={{fontSize:14,fontWeight:700,color:'#E8E8F8'}}>{entryShow}</div>
+        </div>
+        <div style={{background:'rgba(239,68,68,0.08)',borderRadius:6,padding:'6px 8px',textAlign:'center',border:'1px solid rgba(239,68,68,0.15)'}}>
+          <div style={{fontSize:9,color:'#EF4444',marginBottom:2,textTransform:'uppercase',letterSpacing:'.06em'}}>Stop Loss</div>
+          <div style={{fontSize:14,fontWeight:700,color:'#EF4444'}}>₹{slPremium.toFixed(0)}</div>
+          <div style={{fontSize:9,color:'#6B7280'}}>50% · loss ₹{lossPerLot}</div>
+        </div>
+        <div style={{background:'rgba(16,185,129,0.08)',borderRadius:6,padding:'6px 8px',textAlign:'center',border:'1px solid rgba(16,185,129,0.15)'}}>
+          <div style={{fontSize:9,color:'#10B981',marginBottom:2,textTransform:'uppercase',letterSpacing:'.06em'}}>Target</div>
+          <div style={{fontSize:14,fontWeight:700,color:'#10B981'}}>{target?`₹${target.toFixed(0)}`:'+80%'}</div>
+          <div style={{fontSize:9,color:'#6B7280'}}>profit ₹{profitPerLot}</div>
+        </div>
+      </div>
+
+      {/* Lots + risk/reward */}
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',fontSize:10,color:'#6B7280'}}>
+        {lots&&<span style={{color:'#F59E0B',fontWeight:600}}>📊 Qty: {lots} lot{lots>1?'s':''}</span>}
+        <span>R:R = 1:{(parseFloat(profitPerLot)/parseFloat(lossPerLot)).toFixed(1)}</span>
+        {target2&&<span style={{color:'#34D399'}}>T2 trail active</span>}
       </div>
     </div>
   )
@@ -872,7 +901,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
             title="⚡ QUICK SETUP — Scalp +15–20 pts"
             color={vm.c} symbol={result.quickSymbol}
             entryL={result.quickEntryL} entryH={result.quickEntryH}
-            sl={result.quickSl} lots={result.ivpVal>70?'reduced':'full'} liveF={md.liveF}/>}
+            sl={result.quickSl} target={result.quickTarget} lots={result.ivpVal>70?'reduced':'full'} liveF={md.liveF}/>}
           {tradeMode==='swing'&&<SetupCard
             title="🎯 SWING SETUP — Positional +100 pts"
             color={vm.c} symbol={result.swingSymbol||result.quickSymbol}
