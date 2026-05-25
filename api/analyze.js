@@ -23,9 +23,10 @@ export default async function handler(req, res) {
     const body = req.body || {};
     const accessToken = body.accessToken;
     // kiteApiKey: optional override for users with their own Kite developer app
-    // Sandesh: uses process.env.KITE_API_KEY (default)
-    // Omkar: sends his own OMKAR_KITE_API_KEY stored in omkar_api_key localStorage
-    const useDeepSeek = body.useDeepSeek || false;  // Toggle for model selection
+    // Sandesh: sends nothing → uses KITE_API_KEY env var on server
+    // Omkar: sends his omkar_api_key → uses OMKAR_KITE_API_KEY env var on server
+    const kiteApiKey  = body.kiteApiKey  || null;
+    const useDeepSeek = body.useDeepSeek || false;
     
     if (!accessToken) {
       return res.status(400).json({ error: 'accessToken required' });
@@ -45,18 +46,19 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: `Analysis blocked: ${reason}. Run only during 9:15-15:30 IST Mon-Fri.` });
     }
 
-    return await runAnalysis(req, res, accessToken, useDeepSeek);
+    return await runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey);
   } catch(fatal) {
     console.error('Fatal:', fatal.message);
     return res.status(500).json({ error: 'Analysis failed: ' + fatal.message });
   }
 }
 
-async function runAnalysis(req, res, accessToken, useDeepSeek) {
+async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
 
-
-  // Use caller's API key if provided (Omkar uses his own), else fall back to Sandesh's
-  const apiKey = body.kiteApiKey || process.env.KITE_API_KEY;
+  // Use caller's API key if provided, else fall back to server env var
+  // kiteApiKey from body = Omkar's OMKAR_KITE_API_KEY (sent by his browser)
+  // null/undefined = Sandesh's flow → use KITE_API_KEY env var
+  const apiKey = kiteApiKey || process.env.KITE_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'No Kite API key configured' });
   const kH = { 'Authorization': `token ${apiKey}:${accessToken}`, 'X-Kite-Version': '3' };
 
