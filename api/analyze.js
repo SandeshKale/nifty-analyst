@@ -325,7 +325,7 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
     yfFetch('^NSEBANK','1d','2d'),
     yfFetch('^INDIAVIX','1d','2d'),
     yfFetch('^GSPC'), yfFetch('^DJI'), yfFetch('^IXIC'),
-    yfFetch('CL=F'),  yfFetch('GC=F'), yfFetch('INR=X'),
+    yfFetch('BZ=F'),  yfFetch('GC=F'), yfFetch('INR=X'),  // BZ=F = Brent ICE (trades 24hr, live during IST)
     yfFetch('^N225'), yfFetch('^HSI'),
   ]);
 
@@ -400,6 +400,23 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
     if(nau?.last)  niftyAuto=nau.last;
     if(nfi?.last)  niftyFin=nfi.last;
     if(nmi?.last)  niftyMid=nmi.last;
+  }
+
+  // ── F9: IVP from India VIX 30-day history ────────────────────────────────
+  // VIX itself is a good IV proxy for Nifty — compute its percentile rank
+  // over the last 30 trading days to get IVP without needing OC data.
+  // yVixv contains 60d daily data for ^INDIAVIX already fetched in wave 1.
+  let computedIVP = 0;
+  try {
+    const vixCandles = buildCandles(gv(yVix));  // 60d daily VIX candles
+    if (vixCandles.length >= 10 && vix > 0) {
+      const vix30 = vixCandles.slice(-30).map(c => c[4]);  // last 30 closes
+      const below  = vix30.filter(v => v <= vix).length;
+      computedIVP  = Math.round((below / vix30.length) * 100);
+      console.log(`[ivp] computed IVP=${computedIVP}% from ${vix30.length} VIX days`);
+    }
+  } catch(ivpErr) {
+    console.warn('[ivp] compute error:', ivpErr.message);
   }
 
   // ── Derived calculations ──────────────────────────────────────────────────
@@ -533,8 +550,18 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
     console.warn('[oc-guard]', ocNote.slice(0,80));
     // Inject the warning into the OC table so the model sees it prominently
     ocTable = ocNote + '\n' + ocTable;
+    // Even without OC, populate IVP from VIX history
+    if (!ivpVal && computedIVP > 0) {
+      ivpVal = computedIVP;
+      console.log(`[ivp] OC missing — using VIX-based IVP=${ivpVal}%`);
+    }
   } else {
     console.log(`[oc-guard] ok — atmCeP=${atmCeP} atmPeP=${atmPeP} pcr=${pcr} src=${nseSrc}`);
+  // Use VIX-based IVP when OC-based IVP is 0 (Kite blocked or OC missing)
+  if (!ivpVal && computedIVP > 0) {
+    ivpVal = computedIVP;
+    console.log(`[ivp] using VIX-based IVP=${ivpVal}% (OC IVP unavailable)`);
+  }
   }
 
   // ── FII/DII data (Opp 4 — live F6) ──────────────────────────────────────
@@ -562,6 +589,75 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
     console.warn('[fii] parse error:', fiiErr.message);
   }
 
+  // ── F10: Economic event calendar (pre-programmed) ────────────────────────
+  // Known high-impact events — no API needed, just date math.
+  // Returns event name if within ±1 day, null otherwise.
+  function checkEconomicEvents(istDate) {
+    const mm   = istDate.getMonth() + 1;  // 1-12
+    const dd   = istDate.getDate();
+    const dow  = istDate.getDay();        // 0=Sun, 2=Tue
+    const yyyy = istDate.getFullYear();
+
+    // Options expiry: every Tuesday (NSE weekly)
+    if (dow === 2) return 'NSE Weekly Expiry';
+
+    // Monthly expiry: last Thursday of month
+    const lastThursday = (() => {
+      const d = new Date(yyyy, mm, 0);  // last day of month
+      while (d.getDay() !== 4) d.setDate(d.getDate() - 1);
+      return d.getDate();
+    })();
+    if (dow === 4 && dd === lastThursday) return 'NSE Monthly Expiry';
+    if (dow === 3 && dd === lastThursday - 1) return 'Pre-Monthly Expiry';
+
+    // RBI MPC dates 2026 (typically Feb, Apr, Jun, Aug, Oct, Dec)
+    const rbiMPC2026 = [
+      [2,5],[2,6],[2,7],   // Feb MPC
+      [4,7],[4,8],[4,9],   // Apr MPC
+      [6,4],[6,5],[6,6],   // Jun MPC
+      [8,5],[8,6],[8,7],   // Aug MPC
+      [10,6],[10,7],[10,8],// Oct MPC
+      [12,3],[12,4],[12,5],// Dec MPC
+    ];
+    for (const [m, d] of rbiMPC2026) {
+      if (mm === m && dd === d) return 'RBI MPC Meeting';
+    }
+
+    // US Fed FOMC dates 2026 (typically Jan, Mar, May, Jun, Jul, Sep, Nov, Dec)
+    const fomc2026 = [
+      [1,28],[1,29],   // Jan
+      [3,18],[3,19],   // Mar
+      [5,6],[5,7],     // May
+      [6,17],[6,18],   // Jun
+      [7,29],[7,30],   // Jul
+      [9,16],[9,17],   // Sep
+      [11,4],[11,5],   // Nov
+      [12,9],[12,10],  // Dec
+    ];
+    for (const [m, d] of fomc2026) {
+      if (mm === m && dd === d) return 'US Fed FOMC Meeting';
+    }
+
+    // India Union Budget (Feb 1)
+    if (mm === 2 && dd === 1) return 'India Union Budget';
+
+    // US CPI release (typically 2nd Wed of month — high impact for FII flows)
+    const secWed = (() => {
+      const d = new Date(yyyy, mm - 1, 1);
+      let count = 0;
+      while (count < 2) { if (d.getDay() === 3) count++; if (count < 2) d.setDate(d.getDate() + 1); }
+      return d.getDate();
+    })();
+    if (dd === secWed) return 'US CPI Data Release';
+
+    return null;  // no major event today
+  }
+
+  // ist is already declared at top of runAnalysis from line ~66
+  const todayEvent = checkEconomicEvents(ist);
+  const eventText  = todayEvent || 'none';
+  console.log(`[events] today: ${eventText}`);
+
   // ── Global cues ───────────────────────────────────────────────────────────
   const G={
     sp500:toG(gv(sp500R)),dow:toG(gv(dowR)),nas:toG(gv(nasR)),
@@ -569,6 +665,53 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
     nikkei:toG(gv(nikkeiR)),hsi:toG(gv(hsiR)),
   };
   const gLine=(label,d)=>d?`${label}: ${d.price?.toFixed(2)} (${d.pct>=0?'+':''}${d.pct}%)`:`${label}: N/A`;
+
+  // ── F11: Composite sentiment from existing signals ───────────────────────
+  // No new API needed — computed from VIX trend, PCR, breadth, candle momentum
+  let sentimentScore = 0;
+  let sentimentText  = 'none — neutral';
+  try {
+    const vixCandles2 = buildCandles(gv(yVix));
+    const vixPrev     = vixCandles2.length >= 2 ? vixCandles2[vixCandles2.length - 2]?.[4] : vix;
+    const vixRising   = vix > vixPrev * 1.005;   // VIX up >0.5%
+    const vixFalling  = vix < vixPrev * 0.995;   // VIX down >0.5%
+
+    const advN = parseInt(advances) || 0;
+    const decN = parseInt(declines) || 0;
+    const breadthRatio = (advN + decN) > 10 ? advN / (advN + decN) : 0.5;
+
+    const pcrN = parseFloat(pcr) || 0;
+    const isBullishPCR = pcrN > 1.2;
+    const isBearishPCR = pcrN > 0 && pcrN < 0.8;
+
+    // Scoring (+1 bearish cues, -1 bullish cues for sentiment = fear/greed)
+    if (vixRising)          sentimentScore -= 1;  // fear rising
+    if (vixFalling)         sentimentScore += 1;  // fear falling
+    if (breadthRatio < 0.4) sentimentScore -= 1;  // broad selling
+    if (breadthRatio > 0.6) sentimentScore += 1;  // broad buying
+    if (isBearishPCR)       sentimentScore -= 1;  // call heavy
+    if (isBullishPCR)       sentimentScore += 1;  // put heavy
+    if (green10 >= 7)       sentimentScore += 1;  // 7/10 bullish days
+    if (green10 <= 3)       sentimentScore -= 1;  // 7/10 bearish days
+    if (mom === 'BULLISH HH/HL') sentimentScore += 1;
+    if (mom === 'BEARISH LL/LH') sentimentScore -= 1;
+
+    // Summarise
+    const fearCues  = [vixRising, breadthRatio<0.4, isBearishPCR, green10<=3, mom==='BEARISH LL/LH'].filter(Boolean).length;
+    const greedCues = [vixFalling, breadthRatio>0.6, isBullishPCR, green10>=7, mom==='BULLISH HH/HL'].filter(Boolean).length;
+    const vixTrend  = vixRising ? `VIX↑${vix.toFixed(2)}` : vixFalling ? `VIX↓${vix.toFixed(2)}` : `VIX~${vix.toFixed(2)}`;
+    const bullishDays = `${green10}/10 bullish days`;
+
+    if (fearCues >= 3)       sentimentText = `fear dominant — ${vixTrend}, breadth ${Math.round(breadthRatio*100)}%, ${bullishDays}`;
+    else if (greedCues >= 3) sentimentText = `greed dominant — ${vixTrend}, breadth ${Math.round(breadthRatio*100)}%, ${bullishDays}`;
+    else if (fearCues > greedCues) sentimentText = `mild fear — ${vixTrend}, ${bullishDays}`;
+    else if (greedCues > fearCues) sentimentText = `mild greed — ${vixTrend}, ${bullishDays}`;
+    else                     sentimentText = `neutral — ${vixTrend}, breadth ${Math.round(breadthRatio*100)}%, ${bullishDays}`;
+
+    console.log(`[sentiment] score=${sentimentScore} text="${sentimentText}"`);
+  } catch(sentErr) {
+    console.warn('[sentiment] error:', sentErr.message);
+  }
 
   // ── Data freshness ────────────────────────────────────────────────────────
   const isFresh = spot>0;
@@ -603,7 +746,7 @@ Market Breadth: Advances ${advances} / Declines ${declines}
 
 ═══ OPTION CHAIN (NSE, Expiry ${expiry.nseStr}, ${expiry.dte} DTE) ═══
 ATM: ${atm} | PCR: ${pcr} | Call Wall: ${callWall} | Put Wall: ${putWall} | Max Pain: ${maxPain}
-ATM CE: Rs${atmCeP} | ATM PE: Rs${atmPeP} | IVP (ATM IV): ${ivpVal}%
+ATM CE: Rs${atmCeP} | ATM PE: Rs${atmPeP} | IVP: ${ivpVal}%${ivpVal===computedIVP&&!atmCeP?' (VIX-based)':''}
 Next expiry (${expiryNx.nseStr}) ATM CE: Rs${nxAtmCeP} | PE: Rs${nxAtmPeP}
 Sigma 1-day: ${sigma1d} pts | Sigma 1-week: ${sigma1w} pts
 ${ocTable}
@@ -635,6 +778,8 @@ ${gLine('Crude',G.crude)} | ${gLine('Gold',G.gold)} | ${gLine('USD/INR',G.usdInr
 POSITIONS: ${posText}
 PENDING ORDERS: ${ordText}
 FII/DII: ${fiiText}
+TODAY EVENT: ${eventText}
+SENTIMENT: ${sentimentText} (sentimentScore: ${sentimentScore>0?'+':''}${sentimentScore})
 
 MANDATORY STAY OUT if: VIX>22 | spot=0 | expiry day score -5 to +5 | insufficient margin
 MANDATORY ENTRY if: |total score| >= 12 AND VIX<22 AND spot>0 — do NOT output STAY OUT at this score level regardless of DTE or other factors
@@ -652,8 +797,8 @@ F6  FII:       [score]  ${fiiNetCr!==null?`Net Rs${fiiNetCr}Cr`:"no live data"} 
 F7  Breadth:   [score]  [advance:decline]      — [broad selling/buying/neutral]
 F8  Global:    [score]  [S&P500%, Crude$]      — [tailwind/headwind]
 F9  IV:        [score]  [IVP, ATM IV]          — [risk modifier note]
-F10 Events:    [score]  [event or "none"]      — [impact]
-F11 Sentiment: [score]  [sentiment signal]     — [fear/greed read]
+F10 Events:    [score]  ${eventText}       — [impact on market direction]
+F11 Sentiment: [score]  ${sentimentText}  — [fear/greed confirmation]
 TOTAL: XX / ±33
 
 VERDICT FORMAT (include both — use EXACTLY this format, no markdown, no bold):
