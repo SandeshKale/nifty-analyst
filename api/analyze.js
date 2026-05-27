@@ -150,12 +150,21 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   }
 
   // ── Yahoo Finance options fallback ───────────────────────────────────────
-  async function yfOptions(sym) {
+  async function yfOptions(sym, forceNextExpiry = false) {
     try {
-      const r = await tFetch(
-        `https://query1.finance.yahoo.com/v7/finance/options/${encodeURIComponent(sym)}`,
-        {headers:yfH}, 6000
-      );
+      // On expiry day, fetch next week's options (not today's near-zero expiry)
+      // Yahoo accepts ?date=UNIX_TIMESTAMP to select a specific expiry
+      let url = `https://query1.finance.yahoo.com/v7/finance/options/${encodeURIComponent(sym)}`;
+      if (forceNextExpiry) {
+        // Get all available expiry dates first, pick the second one (next week)
+        const r0 = await tFetch(url, {headers:yfH}, 6000);
+        const j0 = await r0.json().catch(()=>null);
+        const dates = j0?.optionChain?.result?.[0]?.expirationDates || [];
+        if (dates.length >= 2) {
+          url += `?date=${dates[1]}`; // second expiry = next week
+        }
+      }
+      const r = await tFetch(url, {headers:yfH}, 6000);
       const j = await r.json().catch(()=>null);
       return j?.optionChain?.result?.[0] || null;
     } catch { return null; }
@@ -302,7 +311,10 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   // Wave 2 promises are fired NOW, not after wave 1 resolves
   const ocPromise     = nseGet(`/api/option-chain-indices?symbol=NIFTY`);
   const idxPromise    = nseGet('/api/allIndices');
-  const yfOptsPromise = yfOptions('^NSEI');
+  // On expiry day, force Yahoo options to use next week's expiry
+  const isExpiryDayEarly = ist.getDay() === 2 &&
+    (ist.getHours() * 60 + ist.getMinutes()) < 15 * 60 + 30;
+  const yfOptsPromise = yfOptions('^NSEI', isExpiryDayEarly);
   // Also start NSE FII/DII data (Opp 4 — live F6 data)
   const fiiPromise    = nseGet('/api/fiidiiTradeReact').catch(() => null);
   // Kite OC promise — fired early, awaited after spot is known (wave 2)
@@ -334,9 +346,17 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   // Wave 2: await the slow NSE sources (already running in background since line 1)
   // By now wave-1 processing + technicals have consumed ~10ms, so OC is nearly ready
   // Also fire Kite OC now that we have spot price from wave 1
+  // On expiry day (today = Tuesday AND market open), use NEXT week's expiry
+  // because same-day options have near-zero premiums — not tradeable.
+  // The display expiry (used for scorecard) already handles this correctly.
+  const isExpiryDay = ist.getDay() === 2 &&
+    (ist.getHours() * 60 + ist.getMinutes()) < 15 * 60 + 30;
+  const ocExpiryObj = isExpiryDay ? getExpiry(1) : getExpiry(0);
+  console.log(`[kite-oc] using expiry: ${ocExpiryObj.dateStr} (isExpiryDay=${isExpiryDay})`);
+
   const kiteOCStarted = kiteOC(
     gv(yIntra)?.meta?.regularMarketPrice || gv(yDaily)?.meta?.regularMarketPrice || 0,
-    getExpiry(0)
+    ocExpiryObj
   );
   kiteOCResolve(kiteOCStarted);  // resolve the deferred promise
 
@@ -744,7 +764,7 @@ VIX: ${vix||'N/A'} | Bank Nifty: ${bn||'N/A'} | Nifty IT: ${niftyIT||'N/A'}
 Nifty Auto: ${niftyAuto||'N/A'} | Nifty Fin: ${niftyFin||'N/A'} | Nifty Midcap: ${niftyMid||'N/A'}
 Market Breadth: Advances ${advances} / Declines ${declines}
 
-═══ OPTION CHAIN (NSE, Expiry ${expiry.nseStr}, ${expiry.dte} DTE) ═══
+═══ OPTION CHAIN (Trading Expiry: ${ocExpiryObj.nseStr}, ${ocExpiryObj.dte} DTE${isExpiryDay?" — using next week (today is expiry day)":""}) ═══
 ATM: ${atm} | PCR: ${pcr} | Call Wall: ${callWall} | Put Wall: ${putWall} | Max Pain: ${maxPain}
 ATM CE: Rs${atmCeP} | ATM PE: Rs${atmPeP} | IVP: ${ivpVal}%${ivpVal===computedIVP&&!atmCeP?' (VIX-based)':''}
 Next expiry (${expiryNx.nseStr}) ATM CE: Rs${nxAtmCeP} | PE: Rs${nxAtmPeP}
