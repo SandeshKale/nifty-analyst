@@ -531,28 +531,61 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
 
   // ── Source 3: Yahoo Finance options (last resort) ────────────────────────
   const yfOptsData=gv(yfOptsR);
-  if (!atmCeP && !atmPeP && yfOptsData && atm > 0) {
+  // ── Source 3: Yahoo Finance direct quote for NSE option symbols ─────────
+  // When Kite is IP-blocked and NSE is geo-blocked, fetch ATM option price
+  // directly from Yahoo Finance chart API using the NSE tradingsymbol.
+  // Format: NIFTY02JUN24000CE.NS (Yahoo uses .NS suffix for NSE)
+  if (!atmCeP && !atmPeP && atm > 0) {
     try {
-      nseSrc = 'Yahoo';
-      const calls=yfOptsData.options?.[0]?.calls||[];
-      const puts=yfOptsData.options?.[0]?.puts||[];
-      const atmCall=calls.reduce((b,c)=>Math.abs((c.strike||0)-atm)<Math.abs((b.strike||0)-atm)?c:b,calls[0]||{});
-      const atmPut=puts.reduce((b,p)=>Math.abs((p.strike||0)-atm)<Math.abs((b.strike||0)-atm)?p:b,puts[0]||{});
-      if(atmCall.lastPrice) atmCeP=atmCall.lastPrice;
-      if(atmPut.lastPrice)  atmPeP=atmPut.lastPrice;
-      if(atmCall.impliedVolatility) ivpVal=Math.round(atmCall.impliedVolatility*100);
-      const totCalls=calls.reduce((s,c)=>s+(c.openInterest||0),0);
-      const totPuts=puts.reduce((s,p)=>s+(p.openInterest||0),0);
-      if(totCalls>0) pcr=isNaN(totPuts/totCalls)?'0':(totPuts/totCalls).toFixed(3);
-      const maxCallOI=calls.reduce((b,c)=>(c.openInterest||0)>(b.openInterest||0)?c:b,{});
-      const maxPutOI=puts.reduce((b,p)=>(p.openInterest||0)>(b.openInterest||0)?p:b,{});
-      if(maxCallOI.strike) callWall=maxCallOI.strike;
-      if(maxPutOI.strike)  putWall=maxPutOI.strike;
-      ocTable='[Yahoo Finance options — limited data]\n';
-      ocTable+=`ATM ${atm} CE: Rs${atmCeP.toFixed(1)} | PE: Rs${atmPeP.toFixed(1)} | PCR: ${pcr}\n`;
-      ocTable+=`Call Wall: ${callWall} | Put Wall: ${putWall}\n`;
-      console.log(`[oc] using Yahoo source — atmCeP=${atmCeP} atmPeP=${atmPeP}`);
-    } catch { /* Yahoo options fallback silent */ }
+      nseSrc = 'Yahoo-Direct';
+      // Build ATM CE and PE symbols in Yahoo NSE format
+      const months3 = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+      const [oey, oem, oed] = ocExpiryObj.dateStr.split('-').map(Number);
+      const expTag  = `${String(oed).padStart(2,'0')}${months3[oem-1]}${oey}`;
+      // Yahoo NSE option format: NIFTY02JUN2024000CE.NS
+      const ceSymYF = `NIFTY${expTag}${atm}CE.NS`;
+      const peSymYF = `NIFTY${expTag}${atm}PE.NS`;
+
+      const [ceQ, peQ] = await Promise.allSettled([
+        tFetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ceSymYF)}?interval=1m&range=1d`, {headers:yfH}, 5000)
+          .then(r=>r.json()).catch(()=>null),
+        tFetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(peSymYF)}?interval=1m&range=1d`, {headers:yfH}, 5000)
+          .then(r=>r.json()).catch(()=>null),
+      ]);
+
+      const ceData = ceQ.status==='fulfilled' ? ceQ.value?.chart?.result?.[0] : null;
+      const peData = peQ.status==='fulfilled' ? peQ.value?.chart?.result?.[0] : null;
+
+      const ceLTP = ceData?.meta?.regularMarketPrice || ceData?.meta?.previousClose || 0;
+      const peLTP = peData?.meta?.regularMarketPrice || peData?.meta?.previousClose || 0;
+
+      if (ceLTP > 0) atmCeP = ceLTP;
+      if (peLTP > 0) atmPeP = peLTP;
+
+      if (atmCeP > 0 || atmPeP > 0) {
+        ocTable = `[Yahoo Direct Quote — ${ceSymYF}]\n`;
+        ocTable += `ATM ${atm} CE: Rs${atmCeP.toFixed(1)} | PE: Rs${atmPeP.toFixed(1)}\n`;
+        console.log(`[oc] Yahoo direct — ${ceSymYF} LTP=${atmCeP}, ${peSymYF} LTP=${atmPeP}`);
+      } else {
+        console.warn(`[oc] Yahoo direct — no price for ${ceSymYF}`);
+        // Final fallback: Yahoo options chain
+        const yfOptsData2 = gv(yfOptsR);
+        if (yfOptsData2) {
+          const calls = yfOptsData2.options?.[0]?.calls || [];
+          const puts  = yfOptsData2.options?.[0]?.puts  || [];
+          const atmCall = calls.reduce((b,c)=>Math.abs((c.strike||0)-atm)<Math.abs((b.strike||0)-atm)?c:b, calls[0]||{});
+          const atmPut  = puts.reduce((b,p)=>Math.abs((p.strike||0)-atm)<Math.abs((b.strike||0)-atm)?p:b, puts[0]||{});
+          if (atmCall.lastPrice) atmCeP = atmCall.lastPrice;
+          if (atmPut.lastPrice)  atmPeP = atmPut.lastPrice;
+          nseSrc = 'Yahoo-Chain';
+          ocTable = `[Yahoo options chain — may be stale]\n`;
+          ocTable += `ATM ${atm} CE: Rs${atmCeP?.toFixed(1)} | PE: Rs${atmPeP?.toFixed(1)}\n`;
+          console.log(`[oc] Yahoo chain fallback — atmCeP=${atmCeP} atmPeP=${atmPeP}`);
+        }
+      }
+    } catch(yfErr) {
+      console.warn('[oc] Yahoo direct quote error:', yfErr.message);
+    }
   }
 
   // ── OC data quality — warn, never block ──────────────────────────────────
