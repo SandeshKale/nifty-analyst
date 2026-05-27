@@ -56,10 +56,11 @@ export default async function handler(req, res) {
 async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
 
   // Use caller's API key if provided, else fall back to server env var
-  // kiteApiKey from body = Omkar's OMKAR_KITE_API_KEY (sent by his browser)
-  // null/undefined = Sandesh's flow → use KITE_API_KEY env var
   const apiKey = kiteApiKey || process.env.KITE_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'No Kite API key configured' });
+
+  // Declare at top so it's always in scope — set true later when OC data missing
+  let ocDataMissing = false;
   const kH = { 'Authorization': `token ${apiKey}:${accessToken}`, 'X-Kite-Version': '3' };
 
   const now = new Date();
@@ -784,8 +785,6 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   const sigma1d=spot&&vix?(spot*(vix/100)/Math.sqrt(252)).toFixed(0):'—';
   const sigma1w=spot&&vix?(spot*(vix/100)/Math.sqrt(52)).toFixed(0):'—';
   const atmAfford=liveF&&atmCeP?Math.floor(liveF/(atmCeP*65))||0:0;
-  // Flag for frontend: when OC missing, prices are not real
-  const ocDataMissing = ocMissing;
   const chg=spot-prevCl;
 
   dataBlock = !isFresh
