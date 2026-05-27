@@ -617,6 +617,13 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   }
   }
 
+  // ── Critical: block fabricated entry prices when OC data missing ────────
+  // When atmCeP=0 the model must NOT invent entry prices.
+  // This instruction is injected into the prompt to prevent hallucination.
+  const ocMissingInstruction = ocMissing
+    ? `\nCRITICAL — OPTION PREMIUM DATA UNAVAILABLE:\nATM CE = Rs0 (no real data from any source). You MUST NOT invent or estimate an entry price.\nFor Entry/SL/Target: write "N/A — verify premium in Kite before entering"\nProvide directional verdict only (ENTRY CE/PE direction). No fabricated numbers.\n`
+    : '';
+
   // ── FII/DII data (Opp 4 — live F6) ──────────────────────────────────────
   // NSE endpoint: /api/fiidiiTradeReact — returns today's FII equity buy/sell
   let fiiNetCr = null;  // null = not available (score F6=0), number = Rs Cr net
@@ -777,6 +784,8 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   const sigma1d=spot&&vix?(spot*(vix/100)/Math.sqrt(252)).toFixed(0):'—';
   const sigma1w=spot&&vix?(spot*(vix/100)/Math.sqrt(52)).toFixed(0):'—';
   const atmAfford=liveF&&atmCeP?Math.floor(liveF/(atmCeP*65))||0:0;
+  // Flag for frontend: when OC missing, prices are not real
+  const ocDataMissing = ocMissing;
   const chg=spot-prevCl;
 
   dataBlock = !isFresh
@@ -834,6 +843,7 @@ FII/DII: ${fiiText}
 TODAY EVENT: ${eventText}
 SENTIMENT: ${sentimentText} (sentimentScore: ${sentimentScore>0?'+':''}${sentimentScore})
 
+${ocMissingInstruction}
 MANDATORY STAY OUT if: VIX>22 | spot=0 | expiry day score -5 to +5 | insufficient margin
 MANDATORY ENTRY if: |total score| >= 12 AND VIX<22 AND spot>0 — do NOT output STAY OUT at this score level regardless of DTE or other factors
 
@@ -1116,7 +1126,7 @@ AUTO-TRADE: [YES - CE/PE / NO]
     quickSymbol,quickEntryL,quickEntryH,quickSl,quickTarget,
     swingSymbol,swingEntryL,swingEntryH,swingSl,
     entryLow:quickEntryL,entryHigh:quickEntryH,
-    scores,lotsStr,ivpVal,
+    scores,lotsStr,ivpVal,ocDataMissing,
     analysis:analysisText,
     promptPreview:prompt || null,   // full prompt — no truncation
     marketData:{

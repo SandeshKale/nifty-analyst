@@ -140,7 +140,7 @@ function StatCard({label,value,sub,color='#E8E8F8',small=false}) {
   )
 }
 
-function SetupCard({title,color,symbol,entryL,entryH,sl,target,target2,lots,liveF}) {
+function SetupCard({title,color,symbol,entryL,entryH,sl,target,target2,lots,liveF,ocDataMissing=false}) {
   if (!symbol) return null
   const premium    = entryH || entryL || 0
   const entryShow  = entryL && entryH && entryL !== entryH
@@ -166,6 +166,14 @@ function SetupCard({title,color,symbol,entryL,entryH,sl,target,target2,lots,live
         <div style={{fontSize:11,color:'#6B7280',marginTop:2}}>Strike: <span style={{color,fontWeight:600}}>{strikeDisp}</span></div>
       </div>
 
+      {/* OC data missing warning */}
+      {ocDataMissing && (
+        <div style={{background:'rgba(245,158,11,0.12)',border:'1px solid rgba(245,158,11,0.3)',
+          borderRadius:6,padding:'6px 10px',marginBottom:8,fontSize:11,color:'#F59E0B',lineHeight:1.5}}>
+          ⚠️ <strong>Premium data unavailable</strong> — prices shown are model estimates only.<br/>
+          Check actual premium in Kite before entering. IP restriction blocks live OC data.
+        </div>
+      )}
       {/* Entry / SL / Target grid */}
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:6}}>
         <div style={{background:'rgba(255,255,255,0.04)',borderRadius:6,padding:'6px 8px',textAlign:'center'}}>
@@ -228,6 +236,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
   const [darkMode,        setDarkMode]        = useState(true)   // default dark
   const [lastAnalysisTime, setLastAnalysisTime] = useState(null) // IST time of last analysis
   const [lastPrompt,      setLastPrompt]      = useState(null)   // prompt sent to AI
+  const [ocDataMissing,   setOcDataMissing]   = useState(false)  // true when OC premium data unavailable
   const [showPrompt,      setShowPrompt]      = useState(false)  // expand prompt panel
   // Rule 1 & 9: Capital tracking
   const [startCapital,    setStartCapital]    = useState(null)
@@ -625,6 +634,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
       // Clear stale order messages when a fresh analysis arrives with STAY OUT
       if (data.verdict?.toUpperCase().includes('STAY OUT')) setOrderMsg(null)
       if (data.usedModel)   setLastModel(data.usedModel)
+      setOcDataMissing(!!data.ocDataMissing)
       if (data.routingTier) setLastTier(data.routingTier)
       // Capture analysis timestamp (IST)
       const istNow = new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}))
@@ -901,7 +911,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
             title="⚡ QUICK SETUP — Scalp +15–20 pts"
             color={vm.c} symbol={result.quickSymbol}
             entryL={result.quickEntryL} entryH={result.quickEntryH}
-            sl={result.quickSl} target={result.quickTarget} lots={result.ivpVal>70?'reduced':'full'} liveF={md.liveF}/>}
+            sl={result.quickSl} target={result.quickTarget} lots={result.ivpVal>70?'reduced':'full'} liveF={md.liveF} ocDataMissing={ocDataMissing}/>}
           {tradeMode==='swing'&&<SetupCard
             title="🎯 SWING SETUP — Positional +100 pts"
             color={vm.c} symbol={result.swingSymbol||result.quickSymbol}
