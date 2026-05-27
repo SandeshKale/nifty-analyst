@@ -1,3 +1,4 @@
+import { apiUrl } from '../api.js'
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -38,7 +39,7 @@ export default function OmkarLogin() {
     setLoading(true); setErr('')
     try {
       // Calls Omkar's login endpoint — uses OMKAR_KITE_API_KEY
-      const res  = await fetch('/api/omkar-kite-login')
+      const res  = await fetch(apiUrl('/api/omkar-kite-login'))
       const data = await res.json()
       if (data.loginUrl) window.location.href = data.loginUrl
       else setErr(data.error || 'Failed to get login URL')

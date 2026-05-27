@@ -1,3 +1,4 @@
+import { apiUrl } from '../api.js'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { activeToken, knownUsers } from '../App.jsx'
@@ -33,7 +34,7 @@ export default function Login() {
   const handleLogin = async () => {
     setLoading(true); setErr('')
     try {
-      const res  = await fetch('/api/kite-login')
+      const res  = await fetch(apiUrl('/api/kite-login'))
       const data = await res.json()
       if (data.loginUrl) window.location.href = data.loginUrl
       else setErr(data.error||'Failed to get login URL')

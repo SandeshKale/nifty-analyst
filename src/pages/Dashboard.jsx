@@ -1,3 +1,4 @@
+import { apiUrl } from '../api.js'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { activeUser, activeToken, knownUsers, switchUser, logoutUser } from '../App.jsx'
@@ -438,7 +439,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
     const qty    = Math.max(LOT_SIZE, lots * LOT_SIZE)
 
     try {
-      const res  = await fetch('/api/place-order',{
+      const res  = await fetch(apiUrl('/api/place-order'),{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({accessToken,tradingsymbol:sym,transactionType:'BUY',quantity:qty})
       })
@@ -458,7 +459,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
       // GTT stop-loss (50% of premium)
       let gttMsg=''
       try {
-        const gttRes = await fetch('/api/place-gtt',{
+        const gttRes = await fetch(apiUrl('/api/place-gtt'),{
           method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({accessToken,tradingsymbol:sym,
             slTriggerPrice:slPremium,currentPrice:entH,quantity:qty})
@@ -513,7 +514,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
           // Force exit below
           const ivCrushExit = true
           try {
-            const res = await fetch('/api/place-order',{method:'POST',headers:{'Content-Type':'application/json'},
+            const res = await fetch(apiUrl('/api/place-order'),{method:'POST',headers:{'Content-Type':'application/json'},
               body:JSON.stringify({accessToken,tradingsymbol:cur.sym,transactionType:'SELL',quantity:cur.qty||LOT_SIZE})})
             const data = await res.json()
             setTradeLog(l=>[{...cur,action:data.orderId?`IV CRUSH EXIT ✅ OID:${data.orderId}`:`IV CRUSH EXIT FAILED`,exitTime:new Date()},...l.slice(0,29)])
@@ -528,7 +529,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
       const flip = (cur.type==='CE'&&score<=0)||(cur.type==='PE'&&score>=0)
       if (flip) {
         try {
-          const res  = await fetch('/api/place-order',{
+          const res  = await fetch(apiUrl('/api/place-order'),{
             method:'POST',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({accessToken,tradingsymbol:cur.sym,
               transactionType:'SELL',quantity:cur.qty||LOT_SIZE})
@@ -582,7 +583,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
     try {
       const callTs = new Date().toLocaleTimeString('en-IN',{hour12:false,timeZone:'Asia/Kolkata'})
       setApiLog(l=>[{ts:callTs,type:'→ REQUEST',msg:'POST /api/analyze',status:'pending',color:'#6366F1'},...l.slice(0,49)])
-      const res  = await fetch('/api/analyze',{
+      const res  = await fetch(apiUrl('/api/analyze'),{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({accessToken, useDeepSeek, kiteApiKey: kiteApiKey||undefined})
       })
@@ -671,7 +672,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
           setOrderMsg(cap.reason)
           try {
             const cur = posRef.current
-            const res = await fetch('/api/place-order',{method:'POST',headers:{'Content-Type':'application/json'},
+            const res = await fetch(apiUrl('/api/place-order'),{method:'POST',headers:{'Content-Type':'application/json'},
               body:JSON.stringify({accessToken,tradingsymbol:cur.sym,transactionType:'SELL',quantity:cur.qty||LOT_SIZE})})
             const data2 = await res.json()
             if(data2.orderId) { setPosition(null); setEntrySnapshot(null) }

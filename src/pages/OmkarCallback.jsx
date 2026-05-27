@@ -1,3 +1,4 @@
+import { apiUrl } from '../api.js'
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -30,7 +31,7 @@ export default function OmkarCallback() {
   const exchangeToken = async (requestToken) => {
     try {
       // Calls Omkar's session endpoint — uses OMKAR_KITE_API_KEY + OMKAR_KITE_API_SECRET
-      const res  = await fetch('/api/omkar-kite-session', {
+      const res  = await fetch(apiUrl('/api/omkar-kite-session'), {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ requestToken }),

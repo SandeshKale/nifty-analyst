@@ -1,3 +1,4 @@
+import { apiUrl } from '../api.js'
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
@@ -30,7 +31,7 @@ export default function Callback() {
 
   const exchangeToken = async (requestToken) => {
     try {
-      const res  = await fetch('/api/kite-session', {
+      const res  = await fetch(apiUrl('/api/kite-session'), {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ requestToken }),
