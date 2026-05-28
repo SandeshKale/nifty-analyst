@@ -542,7 +542,7 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
       // Build ATM CE and PE symbols in Yahoo NSE format
       const months3 = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
       const [oey, oem, oed] = ocExpiryObj.dateStr.split('-').map(Number);
-      const expTag  = `${String(oed).padStart(2,'0')}${months3[oem-1]}${oey}`;
+      const expTag  = `${String(oed).padStart(2,'0')}${months3[oem-1]}${String(oey).slice(2)}`; // 2-digit year e.g. 26 not 2026
       // Yahoo NSE option format: NIFTY02JUN2024000CE.NS
       const ceSymYF = `NIFTY${expTag}${atm}CE.NS`;
       const peSymYF = `NIFTY${expTag}${atm}PE.NS`;
