@@ -1098,8 +1098,30 @@ export default function Dashboard({ omkarMode = false } = {}) {
             ? `⟳  ANALYSING… ${Math.floor(elapsed/60)>0?Math.floor(elapsed/60)+'m ':''}${elapsed%60}s elapsed`
             : stopped?'🛑 STOPPED'
             : !isMarketOpen()?'🔴 MARKET CLOSED — Analysis blocked'
-            :'⚡  ANALYSE NOW (Kite + AI)'}
+            :testMode&&!isMarketOpen()?'🧪 ANALYSE NOW (Test Mode)':'⚡  ANALYSE NOW (Kite + AI)'}
         </button>
+
+      {/* Test Mode banner — only shows when market is closed */}
+      {!isMarketOpen() && (
+        <div style={{margin:'8px 12px 4px',padding:'8px 12px',
+          background:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.25)',
+          borderRadius:8,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:'#F59E0B'}}>🧪 Test Mode</div>
+            <div style={{fontSize:10,color:'#6B7280',marginTop:1}}>
+              {testMode ? 'Analyse Now is active outside market hours' : 'Enable to test outside market hours'}
+            </div>
+          </div>
+          <div onClick={()=>setTestMode(p=>!p)}
+            style={{width:40,height:22,borderRadius:11,
+              background:testMode?'#F59E0B':'#374151',
+              position:'relative',cursor:'pointer',transition:'background .2s',flexShrink:0}}>
+            <div style={{position:'absolute',top:3,
+              left:testMode?19:3,width:16,height:16,
+              borderRadius:'50%',background:'#fff',transition:'left .2s'}}/>
+          </div>
+        </div>
+      )}
       </div>
 
       {/* AUTO ANALYSIS */}
