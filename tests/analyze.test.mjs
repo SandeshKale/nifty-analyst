@@ -494,7 +494,7 @@ test('6.10 — Promise.allSettled wraps all parallel data fetches', () => {
 });
 
 test('6.11 — Expiry day score gate in prompt', () => {
-  assert.ok(SRC.includes('expiry day score -5 to +5'));
+  assert.ok(SRC.includes('score between -7 and +7') || SRC.includes('expiry day score'));
 });
 
 

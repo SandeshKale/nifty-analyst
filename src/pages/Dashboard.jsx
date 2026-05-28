@@ -144,14 +144,21 @@ function StatCard({label,value,sub,color='#E8E8F8',small=false}) {
 function SetupCard({title,color,symbol,entryL,entryH,sl,target,target2,lots,liveF,ocDataMissing=false}) {
   if (!symbol) return null
   const premium    = entryH || entryL || 0
-  const entryShow  = entryL && entryH && entryL !== entryH
+  const noData     = ocDataMissing || (!entryL && !entryH && !sl)
+  const entryShow  = noData ? 'Verify in Kite'
+    : entryL && entryH && entryL !== entryH
     ? `₹${entryL.toFixed(0)}–₹${entryH.toFixed(0)}`
     : `₹${(entryL||entryH||0).toFixed(0)}`
-  const slPremium  = sl || premium * 0.5
-  const lossPerLot = (slPremium * LOT_SIZE).toFixed(0)
-  const profitPerLot = target
+  const slPremium  = sl || (premium > 0 ? premium * 0.5 : 0)
+  const lossPerLot = slPremium > 0 ? (slPremium * LOT_SIZE).toFixed(0) : 'N/A'
+  const profitPerLot = noData ? 'N/A'
+    : target
     ? ((target - premium) * LOT_SIZE).toFixed(0)
-    : (premium * 0.8 * LOT_SIZE).toFixed(0)
+    : premium > 0 ? (premium * 0.8 * LOT_SIZE).toFixed(0) : 'N/A'
+  // Fix R:R — guard against division by zero / NaN
+  const rrRatio = (!noData && parseFloat(lossPerLot) > 0 && parseFloat(profitPerLot) > 0)
+    ? (parseFloat(profitPerLot)/parseFloat(lossPerLot)).toFixed(1)
+    : null
   // Parse strike from symbol e.g. NIFTY26MAY24000CE → 24000 CE
   const strikeMatch = symbol.match(/(\d{4,6})(CE|PE)$/i)
   const strikeDisp  = strikeMatch ? `${parseInt(strikeMatch[1]).toLocaleString()} ${strikeMatch[2].toUpperCase()}` : symbol
@@ -179,24 +186,24 @@ function SetupCard({title,color,symbol,entryL,entryH,sl,target,target2,lots,live
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:6}}>
         <div style={{background:'rgba(255,255,255,0.04)',borderRadius:6,padding:'6px 8px',textAlign:'center'}}>
           <div style={{fontSize:9,color:'#6B7280',marginBottom:2,textTransform:'uppercase',letterSpacing:'.06em'}}>Entry</div>
-          <div style={{fontSize:14,fontWeight:700,color:'#E8E8F8'}}>{entryShow}</div>
+          <div style={{fontSize:noData?11:14,fontWeight:700,color:noData?'#F59E0B':'#E8E8F8'}}>{entryShow}</div>
         </div>
         <div style={{background:'rgba(239,68,68,0.08)',borderRadius:6,padding:'6px 8px',textAlign:'center',border:'1px solid rgba(239,68,68,0.15)'}}>
           <div style={{fontSize:9,color:'#EF4444',marginBottom:2,textTransform:'uppercase',letterSpacing:'.06em'}}>Stop Loss</div>
-          <div style={{fontSize:14,fontWeight:700,color:'#EF4444'}}>₹{slPremium.toFixed(0)}</div>
-          <div style={{fontSize:9,color:'#6B7280'}}>50% · loss ₹{lossPerLot}</div>
+          <div style={{fontSize:14,fontWeight:700,color:noData?'#4B5563':'#EF4444'}}>{noData?'—':`₹${slPremium.toFixed(0)}`}</div>
+          <div style={{fontSize:9,color:'#6B7280'}}>{noData?'verify in Kite':`50% · loss ₹${lossPerLot}`}</div>
         </div>
         <div style={{background:'rgba(16,185,129,0.08)',borderRadius:6,padding:'6px 8px',textAlign:'center',border:'1px solid rgba(16,185,129,0.15)'}}>
           <div style={{fontSize:9,color:'#10B981',marginBottom:2,textTransform:'uppercase',letterSpacing:'.06em'}}>Target</div>
-          <div style={{fontSize:14,fontWeight:700,color:'#10B981'}}>{target?`₹${target.toFixed(0)}`:'+80%'}</div>
-          <div style={{fontSize:9,color:'#6B7280'}}>profit ₹{profitPerLot}</div>
+          <div style={{fontSize:14,fontWeight:700,color:noData?'#4B5563':'#10B981'}}>{noData?'—':target?`₹${target.toFixed(0)}`:'+80%'}</div>
+          <div style={{fontSize:9,color:'#6B7280'}}>{noData?'verify in Kite':`profit ₹${profitPerLot}`}</div>
         </div>
       </div>
 
       {/* Lots + risk/reward */}
       <div style={{display:'flex',gap:8,flexWrap:'wrap',fontSize:10,color:'#6B7280'}}>
         {lots&&<span style={{color:'#F59E0B',fontWeight:600}}>📊 Qty: {lots} lot{lots>1?'s':''}</span>}
-        <span>R:R = 1:{(parseFloat(profitPerLot)/parseFloat(lossPerLot)).toFixed(1)}</span>
+        {rrRatio && <span>R:R = 1:{rrRatio}</span>}
         {target2&&<span style={{color:'#34D399'}}>T2 trail active</span>}
       </div>
     </div>

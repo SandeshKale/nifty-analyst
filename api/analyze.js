@@ -843,8 +843,9 @@ TODAY EVENT: ${eventText}
 SENTIMENT: ${sentimentText} (sentimentScore: ${sentimentScore>0?'+':''}${sentimentScore})
 
 ${ocMissingInstruction}
-MANDATORY STAY OUT if: VIX>22 | spot=0 | expiry day score -5 to +5 | insufficient margin
-MANDATORY ENTRY if: |total score| >= 12 AND VIX<22 AND spot>0 — do NOT output STAY OUT at this score level regardless of DTE or other factors
+MANDATORY STAY OUT if: VIX>22 | spot=0 | score between -7 and +7 (inclusive) | insufficient margin | no option premium data
+MANDATORY ENTRY if: |total score| >= 12 AND VIX<22 AND spot>0 AND premium data available — do NOT output STAY OUT at this score level
+LEAN ENTRY (model judgment) if: |total score| 8-11 — weigh all factors, DTE, and premium availability
 
 SCORECARD — output EXACTLY this JSON block first (integers only, no spaces around colon):
 SCORES:{"f1":0,"f2":0,"f3":0,"f4":0,"f5":0,"f6":0,"f7":0,"f8":0,"f9":0,"f10":0,"f11":0,"total":0}
