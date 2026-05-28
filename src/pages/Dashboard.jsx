@@ -262,14 +262,16 @@ export default function Dashboard({ omkarMode = false } = {}) {
   const [cpMode,          setCpMode]          = useState(false)
   const [cpHard,          setCpHard]          = useState(false)
 
-  const atRef    = useRef(atOn)
-  const posRef   = useRef(position)
+  const atRef       = useRef(atOn)
+  const posRef      = useRef(position)
+  const testModeRef = useRef(false)  // always-current ref to avoid stale closure in useCallback
   const intRef   = useRef(null)
   const cdRef    = useRef(null)
   const clockRef = useRef(null)
   const elRef    = useRef(null)
   useEffect(()=>{atRef.current=atOn},[atOn])
   useEffect(()=>{posRef.current=position},[position])
+  useEffect(()=>{testModeRef.current=testMode},[testMode])
 
   // ── Theme: set CSS variables whenever darkMode changes ──────────────────
   // Also persists preference to localStorage so it survives page reload
@@ -557,16 +559,19 @@ export default function Dashboard({ omkarMode = false } = {}) {
   const analyse = useCallback(async () => {
     if (busy||stopped) return
 
-    // Check token expiry before calling API
-    const expiry = uid ? localStorage.getItem(`kite_token_expiry_${uid}`) : null
-    if (expiry && new Date() > new Date(expiry)) {
-      setErr('Kite session expired — please logout and login again to get a fresh token.')
-      setAutoOn(false); setAtOn(false)  // stop auto-retrying with expired token
-      return
+    // Check token expiry before calling API (skip in test mode)
+    if (!testModeRef.current) {
+      const expiry = uid ? localStorage.getItem(`kite_token_expiry_${uid}`) : null
+      if (expiry && new Date() > new Date(expiry)) {
+        setErr('Kite session expired — please logout and login again to get a fresh token.')
+        setAutoOn(false); setAtOn(false)
+        return
+      }
     }
 
     // Block analysis outside market hours (bypass when testMode is ON)
-    if (!isMarketOpen() && !testMode) {
+    // Use ref to avoid stale closure — testMode state captured at callback creation time
+    if (!isMarketOpen() && !testModeRef.current) {
       const ist = getIST()
       const day = ist.getDay()
       const mins = ist.getHours()*60+ist.getMinutes()
@@ -593,7 +598,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
       setApiLog(l=>[{ts:callTs,type:'→ REQUEST',msg:'POST /api/analyze',status:'pending',color:'#6366F1'},...l.slice(0,49)])
       const res  = await fetch(apiUrl('/api/analyze'),{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({accessToken, useDeepSeek, kiteApiKey: kiteApiKey||undefined, testMode: testMode||undefined})
+        body:JSON.stringify({accessToken, useDeepSeek, kiteApiKey: kiteApiKey||undefined, testMode: testModeRef.current||undefined})
       })
       // Guard: Vercel returns HTML on 504/502 — res.json() would throw
       const rawText = await res.text()
