@@ -241,6 +241,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
   const [autoIntervalMin, setAutoIntervalMin] = useState(10)
   const [apiLog,          setApiLog]          = useState([])   // dev console
   const [showConsole,     setShowConsole]      = useState(false)
+  const [testMode,        setTestMode]        = useState(false)  // bypass market hours for testing
   const [darkMode,        setDarkMode]        = useState(true)   // default dark
   const [lastAnalysisTime, setLastAnalysisTime] = useState(null) // IST time of last analysis
   const [lastPrompt,      setLastPrompt]      = useState(null)   // prompt sent to AI
@@ -592,7 +593,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
       setApiLog(l=>[{ts:callTs,type:'→ REQUEST',msg:'POST /api/analyze',status:'pending',color:'#6366F1'},...l.slice(0,49)])
       const res  = await fetch(apiUrl('/api/analyze'),{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({accessToken, useDeepSeek, kiteApiKey: kiteApiKey||undefined})
+        body:JSON.stringify({accessToken, useDeepSeek, kiteApiKey: kiteApiKey||undefined, testMode: testMode||undefined})
       })
       // Guard: Vercel returns HTML on 504/502 — res.json() would throw
       const rawText = await res.text()

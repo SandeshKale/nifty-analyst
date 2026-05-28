@@ -33,18 +33,21 @@ export default async function handler(req, res) {
     }
 
     // Gate: only run during NSE market hours (9:15–15:30 IST, Mon–Fri)
+    // TEST_MODE=true in .env bypasses market hours for testing outside market hours
+    const testMode = process.env.TEST_MODE === 'true' || body.testMode === true;
     const now = new Date();
     const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
     const day = ist.getDay(), h = ist.getHours(), m = ist.getMinutes();
     const mins = h*60+m;
     const isWeekend = day===0||day===6;
     const inSession = !isWeekend && mins>=9*60+15 && mins<15*60+30;
-    if (!inSession) {
+    if (!inSession && !testMode) {
       const reason = isWeekend ? 'Weekend — market closed'
         : mins < 9*60+15 ? `Pre-market — opens at 9:15 AM IST (${9*60+15-mins} min)`
         : 'Post-market — market closed at 3:30 PM IST';
       return res.status(403).json({ error: `Analysis blocked: ${reason}. Run only during 9:15-15:30 IST Mon-Fri.` });
     }
+    if (testMode && !inSession) console.warn('[test-mode] market closed — running anyway for testing');
 
     return await runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey);
   } catch(fatal) {
