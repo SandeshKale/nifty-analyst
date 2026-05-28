@@ -565,8 +565,8 @@ export default function Dashboard({ omkarMode = false } = {}) {
       return
     }
 
-    // Block analysis outside market hours
-    if (!isMarketOpen()) {
+    // Block analysis outside market hours (bypass when testMode is ON)
+    if (!isMarketOpen() && !testMode) {
       const ist = getIST()
       const day = ist.getDay()
       const mins = ist.getHours()*60+ist.getMinutes()
@@ -1087,18 +1087,19 @@ export default function Dashboard({ omkarMode = false } = {}) {
           </div>
         </div>
         
-        <button onClick={()=>!stopped&&!busy&&analyse()} disabled={busy||stopped||!isMarketOpen()}
+        <button onClick={()=>!stopped&&!busy&&(isMarketOpen()||testMode)&&analyse()}
+          disabled={busy||stopped||(!isMarketOpen()&&!testMode)}
           style={{width:'100%',padding:16,borderRadius:10,border:'none',
             fontWeight:700,fontSize:16,letterSpacing:'0.05em',
-            cursor:busy||stopped||!isMarketOpen()?'not-allowed':'pointer',
-            background:busy||stopped?'#141424':!isMarketOpen()?'#141424':'#6366F1',
-            color:busy||stopped||!isMarketOpen()?'#374151':'#fff',transition:'all 0.2s',
-            boxShadow:busy||stopped||!isMarketOpen()?'none':'0 0 20px rgba(99,102,241,0.4)'}}>
+            cursor:(busy||stopped||(!isMarketOpen()&&!testMode))?'not-allowed':'pointer',
+            background:busy||stopped?'#141424':(!isMarketOpen()&&!testMode)?'#141424':testMode&&!isMarketOpen()?'#92400E':'#6366F1',
+            color:(busy||stopped||(!isMarketOpen()&&!testMode))?'#374151':'#fff',transition:'all 0.2s',
+            boxShadow:(busy||stopped||(!isMarketOpen()&&!testMode))?'none':testMode?'0 0 20px rgba(245,158,11,0.4)':'0 0 20px rgba(99,102,241,0.4)'}}>
           {busy
             ? `⟳  ANALYSING… ${Math.floor(elapsed/60)>0?Math.floor(elapsed/60)+'m ':''}${elapsed%60}s elapsed`
             : stopped?'🛑 STOPPED'
-            : !isMarketOpen()?'🔴 MARKET CLOSED — Analysis blocked'
-            :testMode&&!isMarketOpen()?'🧪 ANALYSE NOW (Test Mode)':'⚡  ANALYSE NOW (Kite + AI)'}
+            : (!isMarketOpen()&&!testMode)?'🔴 MARKET CLOSED — enable 🧪 Test Mode below'
+            : (testMode&&!isMarketOpen())?'🧪 ANALYSE NOW (Test Mode)':'⚡  ANALYSE NOW (Kite + AI)'}
         </button>
 
       {/* Test Mode banner — only shows when market is closed */}
