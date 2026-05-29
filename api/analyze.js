@@ -851,14 +851,14 @@ MANDATORY ENTRY if: |total score| >= 12 AND VIX<22 AND spot>0 AND premium data a
 LEAN ENTRY (model judgment) if: |total score| 8-11 — weigh all factors, DTE, and premium availability
 
 SCORING RULES (apply exactly, each factor = -2/-1/0/+1/+2):
-F1  VIX:    >20→-2, 17-20→-1, 14-17→0, 12-14→+1, <12→+2
+F1  VIX:    >20→-2, 18-20→-1, 15-18→0, 13-15→+1, <13→+2
 F2  PCR:    <0.7→-2, 0.7-0.85→-1, 0.85-1.2→0, 1.2-1.4→+1, >1.4→+2 | OI: call>put→-1, put>call→+1 | 0 if no data
 F3  Intraday: breakdown/rejection→-2/-1, inside range→0, breakout/pullback-held→+1/+2
 F4  Trend:  day% <-1→-2, -1to-0.3→-1, -0.3to+0.3→0, +0.3to+1→+1, >+1→+2
 F5  Sector: BankNifty+FinSvc both weak→-2, one weak→-1, mixed→0, one strong→+1, both strong→+2 | 0 if no data
 F6  FII:    net sell >500Cr→-2, 100-500→-1, neutral→0, buy 100-500→+1, >500Cr→+2 | 0 if no live data
 F7  Breadth: adv/total <30%→-2, 30-45%→-1, 45-55%→0, 55-70%→+1, >70%→+2
-F8  Global: S&P500 <-1%→-2, -1to-0.3%→-1, flat→0, +0.3to+1%→+1, >+1%→+2 (Crude: rising sharply = -1 for India)
+F8  Global: S&P500 <-1%→-2, -1to-0.3%→-1, -0.3to+0.3%→0, +0.3to+1%→+1, >+1%→+2. Crude falling >1%→+1 for India (lower costs)
 F9  IVP:   >85→-1 (expensive, risk), 60-85→0, <40→+1 (cheap, opportunity) | 0 if no data
 F10 Events: major event day→-2/-1, pre-event→-1, no event→0, post-positive→+1
 F11 Sentiment: use pre-computed sentimentScore: ${sentimentScore>0?'+':''}${sentimentScore} — confirm or adjust ±1
