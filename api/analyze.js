@@ -850,21 +850,34 @@ MANDATORY STAY OUT if: VIX>22 | spot=0 | score between -7 and +7 (inclusive) | i
 MANDATORY ENTRY if: |total score| >= 12 AND VIX<22 AND spot>0 AND premium data available — do NOT output STAY OUT at this score level
 LEAN ENTRY (model judgment) if: |total score| 8-11 — weigh all factors, DTE, and premium availability
 
+SCORING RULES (apply exactly, each factor = -2/-1/0/+1/+2):
+F1  VIX:    >20→-2, 17-20→-1, 14-17→0, 12-14→+1, <12→+2
+F2  PCR:    <0.7→-2, 0.7-0.85→-1, 0.85-1.2→0, 1.2-1.4→+1, >1.4→+2 | OI: call>put→-1, put>call→+1 | 0 if no data
+F3  Intraday: breakdown/rejection→-2/-1, inside range→0, breakout/pullback-held→+1/+2
+F4  Trend:  day% <-1→-2, -1to-0.3→-1, -0.3to+0.3→0, +0.3to+1→+1, >+1→+2
+F5  Sector: BankNifty+FinSvc both weak→-2, one weak→-1, mixed→0, one strong→+1, both strong→+2 | 0 if no data
+F6  FII:    net sell >500Cr→-2, 100-500→-1, neutral→0, buy 100-500→+1, >500Cr→+2 | 0 if no live data
+F7  Breadth: adv/total <30%→-2, 30-45%→-1, 45-55%→0, 55-70%→+1, >70%→+2
+F8  Global: S&P500 <-1%→-2, -1to-0.3%→-1, flat→0, +0.3to+1%→+1, >+1%→+2 (Crude: rising sharply = -1 for India)
+F9  IVP:   >85→-1 (expensive, risk), 60-85→0, <40→+1 (cheap, opportunity) | 0 if no data
+F10 Events: major event day→-2/-1, pre-event→-1, no event→0, post-positive→+1
+F11 Sentiment: use pre-computed sentimentScore: ${sentimentScore>0?'+':''}${sentimentScore} — confirm or adjust ±1
+
 SCORECARD — output EXACTLY this JSON block first (integers only, no spaces around colon):
 SCORES:{"f1":0,"f2":0,"f3":0,"f4":0,"f5":0,"f6":0,"f7":0,"f8":0,"f9":0,"f10":0,"f11":0,"total":0}
 
-Then ONE LINE per factor — score | raw number that drove it | one-phrase reason. Use this exact format:
-F1  VIX:       [score]  [value +X%]           — [rising/falling, fear read]
-F2  PCR/OI:    [score]  [PCR | Call±Cr vs Put±Cr] — [ceiling/floor interpretation]
-F3  Intraday:  [score]  [spot level, key move] — [pattern: pullback/rejection/breakout]
-F4  Trend:     [score]  [day change %]         — [continuation/reversal]
-F5  Sector:    [score]  [BankNifty%, FinSvc%]  — [confirming/diverging]
-F6  FII:       [score]  ${fiiNetCr!==null?`Net Rs${fiiNetCr}Cr`:"no live data"}  — [buying/selling intent]
-F7  Breadth:   [score]  [advance:decline]      — [broad selling/buying/neutral]
-F8  Global:    [score]  [S&P500%, Crude$]      — [tailwind/headwind]
-F9  IV:        [score]  [IVP, ATM IV]          — [risk modifier note]
-F10 Events:    [score]  ${eventText}       — [impact on market direction]
-F11 Sentiment: [score]  ${sentimentText}  — [fear/greed confirmation]
+Then ONE LINE per factor — score | raw value | one-phrase reason:
+F1  VIX:       [score]  [value]               — [fear level: stable/rising/falling]
+F2  PCR/OI:    [score]  [PCR | OI summary]    — [ceiling/floor/no data]
+F3  Intraday:  [score]  [spot, pattern]       — [breakout/rejection/range/no data]
+F4  Trend:     [score]  [day change %]        — [bullish/bearish/neutral]
+F5  Sector:    [score]  [BankNifty%, Fin%]    — [confirming/diverging/no data]
+F6  FII:       [score]  ${fiiNetCr!==null?`Net Rs${fiiNetCr}Cr`:"no live data"}  — [intent/no data]
+F7  Breadth:   [score]  [adv:dec ratio]       — [broad buying/selling/neutral]
+F8  Global:    [score]  [S&P500%, Crude$]     — [tailwind/headwind/neutral]
+F9  IV/IVP:    [score]  [IVP%, ATM IV]        — [cheap/expensive/no data]
+F10 Events:    [score]  ${eventText}          — [market impact]
+F11 Sentiment: [score]  ${sentimentText}      — [fear/greed confirmation]
 TOTAL: XX / ±33
 
 VERDICT FORMAT (include both — use EXACTLY this format, no markdown, no bold):
