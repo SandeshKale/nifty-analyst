@@ -547,8 +547,10 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
       const [oey, oem, oed] = ocExpiryObj.dateStr.split('-').map(Number);
       const expTag  = `${String(oed).padStart(2,'0')}${months3[oem-1]}${String(oey).slice(2)}`; // 2-digit year e.g. 26 not 2026
       // Yahoo NSE option format: NIFTY02JUN2024000CE.NS
-      const ceSymYF = `NIFTY${expTag}${atm}CE.NS`;
-      const peSymYF = `NIFTY${expTag}${atm}PE.NS`;
+      // Yahoo options use 100-pt strike intervals — round ATM to nearest 100
+      const atmYF = Math.round((atm||spot||23500) / 100) * 100;
+      const ceSymYF = `NIFTY${expTag}${atmYF}CE.NS`;
+      const peSymYF = `NIFTY${expTag}${atmYF}PE.NS`;
 
       const [ceQ, peQ] = await Promise.allSettled([
         tFetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ceSymYF)}?interval=1m&range=1d`, {headers:yfH}, 5000)
