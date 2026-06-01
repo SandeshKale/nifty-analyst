@@ -319,8 +319,13 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   const isExpiryDayEarly = ist.getDay() === 2 &&
     (ist.getHours() * 60 + ist.getMinutes()) < 15 * 60 + 30;
   const yfOptsPromise = yfOptions('^NSEI', isExpiryDayEarly);
-  // Also start NSE FII/DII data (Opp 4 — live F6 data)
+  // NSE FII/DII — may be geo-blocked, fire anyway (caught below)
   const fiiPromise    = nseGet('/api/fiidiiTradeReact').catch(() => null);
+  // Stooq FII fallback — globally accessible, T+1 but better than nothing
+  const stooqFIIPromise = tFetch(
+    'https://stooq.com/q/d/l/?s=fii.pl&i=d',
+    { headers: { 'User-Agent': 'Mozilla/5.0' } }, 5000
+  ).catch(() => null);
   // Kite OC promise — fired early, awaited after spot is known (wave 2)
   // kiteOC needs spot price which comes from wave 1, so we build a deferred promise
   let kiteOCResolve;
@@ -330,7 +335,7 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   const [
     margR, posR, ordR,
     yIntra, yDaily,
-    yBN, yVix,
+    yBN, yVix, yIT, yFin,
     sp500R, dowR, nasR, crudeR, goldR, usdInrR, nikkeiR, hsiR,
   ] = await Promise.allSettled([
     tFetch('https://api.kite.trade/user/margins',{headers:kH},6000).then(r=>r.json()).catch(()=>null),
@@ -339,7 +344,9 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
     yfFetch('^NSEI','5m','1d'),
     yfFetch('^NSEI','1d','60d'),
     yfFetch('^NSEBANK','1d','2d'),
-    yfFetch('^INDIAVIX','1d','2d'),
+    yfFetch('^INDIAVIX','1d','60d'),  // 60d needed for IVP percentile computation
+    yfFetch('^CNXIT','1d','2d'),    // Nifty IT — Yahoo ticker
+    yfFetch('^CNXFIN','1d','2d'),   // Nifty Financial Services — Yahoo ticker
     yfFetch('^GSPC'), yfFetch('^DJI'), yfFetch('^IXIC'),
     yfFetch('BZ=F'),  yfFetch('GC=F'), yfFetch('INR=X'),  // BZ=F = Brent ICE (trades 24hr, live during IST)
     yfFetch('^N225'), yfFetch('^HSI'),
@@ -364,8 +371,8 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   );
   kiteOCResolve(kiteOCStarted);  // resolve the deferred promise
 
-  const [ocJ, idxJ, yfOptsR, fiiJ, kiteOCR] = await Promise.allSettled([
-    ocPromise, idxPromise, yfOptsPromise, fiiPromise, kiteOCPromise,
+  const [ocJ, idxJ, yfOptsR, fiiJ, kiteOCR, stooqFIIJ] = await Promise.allSettled([
+    ocPromise, idxPromise, yfOptsPromise, fiiPromise, kiteOCPromise, stooqFIIPromise,
   ]);
 
   // ── Kite: margins, positions, orders ──────────────────────────────────────
@@ -406,6 +413,9 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   const nseIdx = gv(idxJ);
   let advances='N/A', declines='N/A';
   let niftyIT=0,niftyAuto=0,niftyFin=0,niftyMid=0;
+  // Yahoo fallbacks for sector data when NSE allIndices is geo-blocked
+  const yITv  = gv(yIT);
+  const yFinv = gv(yFin);
   let nseSrc='Yahoo';
   if(nseIdx?.data){
     nseSrc='NSE+Yahoo';
@@ -426,18 +436,28 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
     if(nmi?.last)  niftyMid=nmi.last;
   }
 
+  // ── Yahoo sector fallbacks when NSE allIndices geo-blocked ──────────────
+  // ^CNXIT and ^CNXFIN are Yahoo tickers for Nifty IT and FinSvc
+  if (!niftyIT && yITv?.meta?.regularMarketPrice)  niftyIT  = yITv.meta.regularMarketPrice;
+  if (!niftyFin && yFinv?.meta?.regularMarketPrice) niftyFin = yFinv.meta.regularMarketPrice;
+  // Compute sector % change from Yahoo previous close
+  const niftyITPct  = yITv?.meta  ? ((yITv.meta.regularMarketPrice  - yITv.meta.chartPreviousClose)  / yITv.meta.chartPreviousClose  * 100).toFixed(2) : '0';
+  const niftyFinPct = yFinv?.meta ? ((yFinv.meta.regularMarketPrice - yFinv.meta.chartPreviousClose) / yFinv.meta.chartPreviousClose * 100).toFixed(2) : '0';
+  const niftyBNPct  = yBNv?.meta  ? ((yBNv.meta.regularMarketPrice  - yBNv.meta.chartPreviousClose)  / yBNv.meta.chartPreviousClose  * 100).toFixed(2) : '0';
+  console.log(`[sectors] BN=${niftyBNPct}% IT=${niftyITPct}% Fin=${niftyFinPct}%`);
+
   // ── F9: IVP from India VIX 30-day history ────────────────────────────────
-  // VIX itself is a good IV proxy for Nifty — compute its percentile rank
-  // over the last 30 trading days to get IVP without needing OC data.
-  // yVixv contains 60d daily data for ^INDIAVIX already fetched in wave 1.
+  // Computed regardless of OC availability — VIX percentile is always valid.
+  // High IVP = expensive options = risk (score -1)
+  // Low IVP  = cheap options = opportunity (score +1)
   let computedIVP = 0;
   try {
     const vixCandles = buildCandles(gv(yVix));  // 60d daily VIX candles
     if (vixCandles.length >= 10 && vix > 0) {
-      const vix30 = vixCandles.slice(-30).map(c => c[4]);  // last 30 closes
+      const vix30 = vixCandles.slice(-30).map(c => c[4]).filter(v => v > 0);
       const below  = vix30.filter(v => v <= vix).length;
       computedIVP  = Math.round((below / vix30.length) * 100);
-      console.log(`[ivp] computed IVP=${computedIVP}% from ${vix30.length} VIX days`);
+      console.log(`[ivp] VIX-based IVP=${computedIVP}% (vix=${vix} vs ${vix30.length} days, range ${Math.min(...vix30).toFixed(1)}-${Math.max(...vix30).toFixed(1)})`);
     }
   } catch(ivpErr) {
     console.warn('[ivp] compute error:', ivpErr.message);
@@ -655,6 +675,32 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
     console.warn('[fii] parse error:', fiiErr.message);
   }
 
+  // ── Stooq FII fallback (T+1, globally accessible) ─────────────────────
+  if (fiiNetCr === null) {
+    try {
+      const stooqR = gv(stooqFIIJ);
+      if (stooqR?.ok) {
+        const csv = await stooqR.text().catch(() => '');
+        // Stooq CSV format: Date,Open,High,Low,Close,Volume
+        // FII.PL is FII net buy/sell in PLN — use as directional signal
+        const lines = csv.trim().split('\n').filter(l => l && !l.startsWith('Date'));
+        if (lines.length >= 2) {
+          const latest  = lines[lines.length - 1].split(',');
+          const prevDay = lines[lines.length - 2].split(',');
+          const latestClose  = parseFloat(latest[4])  || 0;
+          const prevClose    = parseFloat(prevDay[4]) || 0;
+          const direction    = latestClose > prevClose ? 'buying' : 'selling';
+          const netApprox    = Math.abs(latestClose - prevClose);
+          fiiNetCr  = latestClose > prevClose ? Math.round(netApprox / 100) : -Math.round(netApprox / 100);
+          fiiText   = `FII (T+1 approx): ${direction} — Stooq FII index ${direction === 'buying' ? '↑' : '↓'}`;
+          console.log(`[fii-stooq] direction=${direction} approxCr=${fiiNetCr}`);
+        }
+      }
+    } catch(stooqErr) {
+      console.warn('[fii-stooq] error:', stooqErr.message);
+    }
+  }
+
   // ── F10: Economic event calendar (pre-programmed) ────────────────────────
   // Known high-impact events — no API needed, just date math.
   // Returns event name if within ±1 day, null otherwise.
@@ -673,8 +719,7 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
       while (d.getDay() !== 4) d.setDate(d.getDate() - 1);
       return d.getDate();
     })();
-    if (dow === 4 && dd === lastThursday) return 'NSE Monthly Expiry';
-    if (dow === 3 && dd === lastThursday - 1) return 'Pre-Monthly Expiry';
+    if (dow === 4 && dd === lastThursday) return 'NSE Monthly Expiry (theta crush)';
 
     // RBI MPC dates 2026 (typically Feb, Apr, Jun, Aug, Oct, Dec)
     const rbiMPC2026 = [
@@ -807,7 +852,7 @@ Bullish days (last 10): ${green10}/10
 
 ═══ INDICES & SECTORS ═══
 VIX: ${vix||'N/A'} | Bank Nifty: ${bn||'N/A'} | Nifty IT: ${niftyIT||'N/A'}
-Nifty Auto: ${niftyAuto||'N/A'} | Nifty Fin: ${niftyFin||'N/A'} | Nifty Midcap: ${niftyMid||'N/A'}
+Nifty IT: ${niftyIT||'N/A'} (${niftyITPct}%) | Nifty Fin: ${niftyFin||'N/A'} (${niftyFinPct}%) | BankNifty: ${bn||'N/A'} (${niftyBNPct}%)
 Market Breadth: Advances ${advances} / Declines ${declines}
 
 ═══ OPTION CHAIN (Trading Expiry: ${ocExpiryObj.nseStr}, ${ocExpiryObj.dte} DTE${isExpiryDay?" — using next week (today is expiry day)":""}) ═══
