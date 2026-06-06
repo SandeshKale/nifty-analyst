@@ -27,6 +27,9 @@ export default async function handler(req, res) {
     // Omkar: sends his omkar_api_key → uses OMKAR_KITE_API_KEY env var on server
     const kiteApiKey  = body.kiteApiKey  || null;
     const useDeepSeek = body.useDeepSeek || false;
+    // kiteData: pre-fetched by browser (bypasses server IP restriction)
+    // When present, server skips its own Kite API calls entirely
+    const kiteData    = body.kiteData    || null;
     
     if (!accessToken) {
       return res.status(400).json({ error: 'accessToken required' });
@@ -49,14 +52,14 @@ export default async function handler(req, res) {
     }
     if (testMode && !inSession) console.warn('[test-mode] market closed — running anyway for testing');
 
-    return await runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey);
+    return await runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey, kiteData);
   } catch(fatal) {
     console.error('Fatal:', fatal.message);
     return res.status(500).json({ error: 'Analysis failed: ' + fatal.message });
   }
 }
 
-async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
+async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey, kiteData) {
 
   // Use caller's API key if provided, else fall back to server env var
   const apiKey = kiteApiKey || process.env.KITE_API_KEY;
@@ -332,15 +335,28 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   const kiteOCPromise = new Promise(resolve => { kiteOCResolve = resolve; });
 
   // Wave 1: fast sources — resolve in ~1-2s
+  // Kite data: use browser-prefetched data if available (bypasses IP restriction)
+  // Otherwise fall back to server-side Kite calls (requires whitelisted IP)
+  const useBrowserKite = !!(kiteData?.margins || kiteData?.oc);
+  if (useBrowserKite) console.log('[kite] using browser-prefetched data — skipping server Kite calls');
+  else                console.log('[kite] no browser data — calling Kite API from server');
+
   const [
     margR, posR, ordR,
     yIntra, yDaily,
     yBN, yVix, yIT, yFin,
     sp500R, dowR, nasR, crudeR, goldR, usdInrR, nikkeiR, hsiR,
   ] = await Promise.allSettled([
-    tFetch('https://api.kite.trade/user/margins',{headers:kH},6000).then(r=>r.json()).catch(()=>null),
-    tFetch('https://api.kite.trade/portfolio/positions',{headers:kH},6000).then(r=>r.json()).catch(()=>null),
-    tFetch('https://api.kite.trade/orders',{headers:kH},6000).then(r=>r.json()).catch(()=>null),
+    // Kite: use browser data if available, else call from server
+    useBrowserKite
+      ? Promise.resolve(kiteData.margins)
+      : tFetch('https://api.kite.trade/user/margins',{headers:kH},6000).then(r=>r.json()).catch(()=>null),
+    useBrowserKite
+      ? Promise.resolve(kiteData.positions)
+      : tFetch('https://api.kite.trade/portfolio/positions',{headers:kH},6000).then(r=>r.json()).catch(()=>null),
+    useBrowserKite
+      ? Promise.resolve(kiteData.orders)
+      : tFetch('https://api.kite.trade/orders',{headers:kH},6000).then(r=>r.json()).catch(()=>null),
     yfFetch('^NSEI','5m','1d'),
     yfFetch('^NSEI','1d','60d'),
     yfFetch('^NSEBANK','1d','2d'),
@@ -348,7 +364,7 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
     yfFetch('^CNXIT','1d','2d'),    // Nifty IT — Yahoo ticker
     yfFetch('^CNXFIN','1d','2d'),   // Nifty Financial Services — Yahoo ticker
     yfFetch('^GSPC'), yfFetch('^DJI'), yfFetch('^IXIC'),
-    yfFetch('BZ=F'),  yfFetch('GC=F'), yfFetch('INR=X'),  // BZ=F = Brent ICE (trades 24hr, live during IST)
+    yfFetch('BZ=F'),  yfFetch('GC=F'), yfFetch('INR=X'),  // BZ=F = Brent ICE
     yfFetch('^N225'), yfFetch('^HSI'),
   ]);
 
@@ -365,11 +381,12 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey) {
   const ocExpiryObj = isExpiryDay ? getExpiry(1) : getExpiry(0);
   console.log(`[kite-oc] using expiry: ${ocExpiryObj.dateStr} (isExpiryDay=${isExpiryDay})`);
 
-  const kiteOCStarted = kiteOC(
-    gv(yIntra)?.meta?.regularMarketPrice || gv(yDaily)?.meta?.regularMarketPrice || 0,
-    ocExpiryObj
-  );
-  kiteOCResolve(kiteOCStarted);  // resolve the deferred promise
+  // Use browser-prefetched OC if available — it's already structured correctly
+  const spotForOC = gv(yIntra)?.meta?.regularMarketPrice || gv(yDaily)?.meta?.regularMarketPrice || 0;
+  const kiteOCStarted = useBrowserKite && kiteData?.oc
+    ? Promise.resolve(kiteData.oc)           // use browser data — no server Kite call needed
+    : kiteOC(spotForOC, ocExpiryObj);        // fall back to server Kite call
+  kiteOCResolve(kiteOCStarted);
 
   const [ocJ, idxJ, yfOptsR, fiiJ, kiteOCR, stooqFIIJ] = await Promise.allSettled([
     ocPromise, idxPromise, yfOptsPromise, fiiPromise, kiteOCPromise, stooqFIIPromise,

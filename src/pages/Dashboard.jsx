@@ -1,4 +1,5 @@
 import { apiUrl } from '../api.js'
+import { fetchAllKiteData, placeOrder as kiteOrder, placeGTT as kiteGTT } from '../kite.js'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { activeUser, activeToken, knownUsers, switchUser, logoutUser } from '../App.jsx'
@@ -246,6 +247,7 @@ export default function Dashboard({ omkarMode = false } = {}) {
   const [lastAnalysisTime, setLastAnalysisTime] = useState(null) // IST time of last analysis
   const [lastPrompt,      setLastPrompt]      = useState(null)   // prompt sent to AI
   const [ocDataMissing,   setOcDataMissing]   = useState(false)  // true when OC premium data unavailable
+  const [kiteDataStatus,  setKiteDataStatus]  = useState(null)   // 'ok' | 'error' | null
   const [showPrompt,      setShowPrompt]      = useState(false)  // expand prompt panel
   // Rule 1 & 9: Capital tracking
   const [startCapital,    setStartCapital]    = useState(null)
@@ -333,6 +335,8 @@ export default function Dashboard({ omkarMode = false } = {}) {
   // kiteApiKey: each user may have their own Kite developer app (e.g. Omkar)
   // Stored as kite_api_key_{uid} by OmkarDashboard bridge; blank = use server default
   const kiteApiKey  = uid ? (localStorage.getItem(`kite_api_key_${uid}`) || '') : ''
+  // Resolve effective API key — user's own key or fall back to env default
+  const effectiveApiKey = kiteApiKey || import.meta.env.VITE_KITE_API_KEY || ''
   const [accounts,  setAccounts]  = useState(() => knownUsers())
   // totalCost now accumulated per-model in state (Groq calls = ₹0)
   const cpc         = calls>0?totalCost/calls:0
@@ -524,8 +528,10 @@ export default function Dashboard({ omkarMode = false } = {}) {
           // Force exit below
           const ivCrushExit = true
           try {
-            const res = await fetch(apiUrl('/api/place-order'),{method:'POST',headers:{'Content-Type':'application/json'},
-              body:JSON.stringify({accessToken,tradingsymbol:cur.sym,transactionType:'SELL',quantity:cur.qty||LOT_SIZE})})
+            const res = await (async () => {
+              const d = await kiteOrder(effectiveApiKey, accessToken, {tradingsymbol:cur.sym,transactionType:'SELL',quantity:cur.qty||LOT_SIZE});
+              return { ok: true, json: async () => d };
+            })()
             const data = await res.json()
             setTradeLog(l=>[{...cur,action:data.orderId?`IV CRUSH EXIT ✅ OID:${data.orderId}`:`IV CRUSH EXIT FAILED`,exitTime:new Date()},...l.slice(0,29)])
             setLastExit({dir:cur.type, time:Date.now()})
@@ -596,9 +602,41 @@ export default function Dashboard({ omkarMode = false } = {}) {
     try {
       const callTs = new Date().toLocaleTimeString('en-IN',{hour12:false,timeZone:'Asia/Kolkata'})
       setApiLog(l=>[{ts:callTs,type:'→ REQUEST',msg:'POST /api/analyze',status:'pending',color:'#6366F1'},...l.slice(0,49)])
+      // ── Browser-side Kite fetch ──────────────────────────────────────────
+      // Fetch Kite data directly from browser — bypasses server IP restriction.
+      // Your browser IP is always your home IP, no whitelist needed.
+      let kiteData = null;
+      if (accessToken && effectiveApiKey) {
+        try {
+          // Get spot price first (fast, from existing state or quick fetch)
+          const spotNow = result?.marketData?.spot || 0;
+          const expiryDateStr = (() => {
+            // Next Tuesday
+            const d = new Date();
+            const ist = new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+            const diff = (2 - ist.getDay() + 7) % 7 || 7;
+            ist.setDate(ist.getDate() + diff);
+            return ist.toISOString().slice(0, 10);
+          })();
+          kiteData = await fetchAllKiteData(effectiveApiKey, accessToken, spotNow, expiryDateStr);
+          setKiteDataStatus(kiteData?.oc ? 'ok' : 'partial');
+          console.log('[kite-browser] fetched — margins:', !!kiteData.margins, 'oc:', !!kiteData.oc);
+        } catch(kiteErr) {
+          console.warn('[kite-browser] fetch failed:', kiteErr.message);
+          setKiteDataStatus('error');
+          // Continue without browser Kite data — server will try its own calls
+        }
+      }
+
       const res  = await fetch(apiUrl('/api/analyze'),{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({accessToken, useDeepSeek, kiteApiKey: kiteApiKey||undefined, testMode: testModeRef.current||undefined})
+        body:JSON.stringify({
+          accessToken,
+          useDeepSeek,
+          kiteApiKey:  kiteApiKey||undefined,
+          testMode:    testModeRef.current||undefined,
+          kiteData:    kiteData||undefined,  // pre-fetched browser Kite data
+        })
       })
       // Guard: Vercel returns HTML on 504/502 — res.json() would throw
       const rawText = await res.text()
@@ -685,8 +723,10 @@ export default function Dashboard({ omkarMode = false } = {}) {
           setOrderMsg(cap.reason)
           try {
             const cur = posRef.current
-            const res = await fetch(apiUrl('/api/place-order'),{method:'POST',headers:{'Content-Type':'application/json'},
-              body:JSON.stringify({accessToken,tradingsymbol:cur.sym,transactionType:'SELL',quantity:cur.qty||LOT_SIZE})})
+            const res = await (async () => {
+              const d = await kiteOrder(effectiveApiKey, accessToken, {tradingsymbol:cur.sym,transactionType:'SELL',quantity:cur.qty||LOT_SIZE});
+              return { ok: true, json: async () => d };
+            })()
             const data2 = await res.json()
             if(data2.orderId) { setPosition(null); setEntrySnapshot(null) }
           } catch(e) {}
