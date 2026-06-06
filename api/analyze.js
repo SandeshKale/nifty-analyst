@@ -213,7 +213,9 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey, kiteD
         { headers: kH }, 8000
       );
       if (!r.ok) {
-        console.warn('[kite-oc] quote failed HTTP', r.status);
+        let errBody = '';
+        try { errBody = await r.text(); } catch(e) {}
+        console.warn(`[kite-oc] quote failed HTTP ${r.status} — apiKey=${apiKey?.slice(0,8)}... tokenTail=${accessToken?.slice(-6)} body=${errBody.slice(0,120)}`);
         return null;
       }
       const j = await r.json().catch(() => null);
