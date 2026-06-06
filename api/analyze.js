@@ -390,8 +390,28 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey, kiteD
     : kiteOC(spotForOC, ocExpiryObj);        // fall back to server Kite call
   kiteOCResolve(kiteOCStarted);
 
-  const [ocJ, idxJ, yfOptsR, fiiJ, kiteOCR, stooqFIIJ] = await Promise.allSettled([
-    ocPromise, idxPromise, yfOptsPromise, fiiPromise, kiteOCPromise, stooqFIIPromise,
+  // Dhan OC — fire now that we have ocExpiryObj (declared just above)
+  // Free, globally accessible, no IP restriction — best fallback for F2/F9
+  const dhanClientId    = process.env.DHAN_CLIENT_ID;
+  const dhanAccessToken = process.env.DHAN_ACCESS_TOKEN;
+  const dhanOCPromise   = (dhanClientId && dhanAccessToken)
+    ? tFetch('https://api.dhan.co/v2/optionchain', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'access-token': dhanAccessToken,
+          'client-id':    dhanClientId,
+        },
+        body: JSON.stringify({
+          UnderlyingScrip: 13,
+          UnderlyingSeg:   'IDX_I',
+          Expiry:          ocExpiryObj.dateStr,
+        }),
+      }, 8000).then(r => r.ok ? r.json() : null).catch(e => { console.warn('[dhan-oc]', e.message); return null; })
+    : Promise.resolve(null);
+
+  const [ocJ, idxJ, yfOptsR, fiiJ, kiteOCR, stooqFIIJ, dhanOCJ] = await Promise.allSettled([
+    ocPromise, idxPromise, yfOptsPromise, fiiPromise, kiteOCPromise, stooqFIIPromise, dhanOCPromise,
   ]);
 
   // ── Kite: margins, positions, orders ──────────────────────────────────────
@@ -508,20 +528,67 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey, kiteD
   const last20c= c5m.slice(-6).map(c=>`[${c[0].slice(11,16)} O:${c[1].toFixed(0)} H:${c[2].toFixed(0)} L:${c[3].toFixed(0)} C:${c[4].toFixed(0)}]`).join(' ');
   const last15d= cDay.slice(-5).map(c=>`[${c[0].slice(5,10)} O:${c[1].toFixed(0)} H:${c[2].toFixed(0)} L:${c[3].toFixed(0)} C:${c[4].toFixed(0)}]`).join(' ');
 
-  // ── Option Chain — Priority: Kite → NSE → Yahoo ──────────────────────────
-  // Kite /quote: real-time, no geo-block, uses user's own auth token
-  // NSE: often blocked from Singapore/Vercel (geo-CDN restriction)
+  // ── Option Chain — Priority: Dhan → Kite → NSE → Yahoo ──────────────────
+  // Dhan: FREE, globally accessible, no IP restriction, full OI+IV+Greeks ← PRIMARY
+  // Kite: requires paid Kite Connect plan (PermissionException on free plan)
+  // NSE:  geo-blocked from Singapore/Vercel
   // Yahoo: stale at open, limited strikes
   let pcr='0',callWall=atm,putWall=atm,maxPain=atm,atmCeP=0,atmPeP=0,nxAtmCeP=0,nxAtmPeP=0,ivpVal=0;
-  let totCeOI=0,totPeOI=0;
+  let totCeOI=0,totPeOI=0,atmIVdhan=0;
   let ocTable='Strike | CE_LTP | CE_OI      | OI_CHG   | PE_LTP | PE_OI      | OI_CHG\n';
   ocTable    +='-------|--------|------------|----------|--------|------------|----------\n';
-  // OC source tracker — reuses nseSrc declared above
-  // (nseSrc already set by NSE allIndices section)
 
-  // ── Source 1: Kite /quote (primary — globally accessible, real-time) ─────
-  const kiteOCData = gv(kiteOCR);   // result from kiteOC() called in wave 2
-  if (kiteOCData && kiteOCData.atmCeP > 0 && atm > 0) {
+  // ── Source 0: Dhan option chain (PRIMARY — free, global, full OI+IV+Greeks) ──
+  const dhanRaw  = gv(dhanOCJ);
+  const dhanOC   = dhanRaw?.data?.oc || dhanRaw?.oc || null;
+  const dhanSpot = dhanRaw?.data?.last_price || dhanRaw?.last_price || 0;
+  if (dhanOC && atm > 0) {
+    nseSrc = 'Dhan';
+    const ocEntries = Object.entries(dhanOC);
+    let mxCeOI = 0, mxPeOI = 0;
+    const fc = n => (n>=0?'+':'')+String(Math.round(n)).padStart(8);
+
+    for (const [strikeStr, sd] of ocEntries) {
+      const st   = Math.round(parseFloat(strikeStr));
+      const ce   = sd.ce || {}, pe = sd.pe || {};
+      const ceOI = ce.oi||0, peOI = pe.oi||0;
+      const ceOIChg = ceOI-(ce.previous_oi||0), peOIChg = peOI-(pe.previous_oi||0);
+      totCeOI += ceOI; totPeOI += peOI;
+      if (ceOI > mxCeOI) { mxCeOI=ceOI; callWall=st; }
+      if (peOI > mxPeOI) { mxPeOI=peOI; putWall=st; }
+      if (Math.abs(st-atm) <= 500)
+        ocTable += `${String(st).padStart(6)} | ${String((ce.last_price||0).toFixed(0)).padStart(6)} | ${String(ceOI).padStart(10)} | ${fc(ceOIChg)} | ${String((pe.last_price||0).toFixed(0)).padStart(6)} | ${String(peOI).padStart(10)} | ${fc(peOIChg)}\n`;
+    }
+
+    pcr = totCeOI>0 ? (totPeOI/totCeOI).toFixed(3) : '0';
+
+    // Max pain
+    const dStrikes = ocEntries.map(([s])=>Math.round(parseFloat(s))).sort((a,b)=>b-a);
+    let minLoss=Infinity;
+    for (const target of dStrikes) {
+      let loss=0;
+      for (const [s,sd] of ocEntries) { const st=Math.round(parseFloat(s)); if(target<st)loss+=(sd.ce?.oi||0)*(st-target); if(target>st)loss+=(sd.pe?.oi||0)*(target-st); }
+      if(loss<minLoss){minLoss=loss;maxPain=target;}
+    }
+
+    // ATM premiums — try exact strike, then string with decimals
+    const atmKeys = [`${atm}`,`${atm}.000000`,`${atm}.0`];
+    let atmEnt = null;
+    for (const k of atmKeys) { if(dhanOC[k]){atmEnt=dhanOC[k];break;} }
+    if(!atmEnt) { const found=ocEntries.find(([s])=>Math.round(parseFloat(s))===atm); if(found) atmEnt=found[1]; }
+    if (atmEnt) {
+      atmCeP    = atmEnt.ce?.last_price || 0;
+      atmPeP    = atmEnt.pe?.last_price || 0;
+      atmIVdhan = atmEnt.ce?.implied_volatility || atmEnt.pe?.implied_volatility || 0;
+    }
+    console.log(`[dhan-oc] ok — pcr=${pcr} callWall=${callWall} putWall=${putWall} maxPain=${maxPain} atmCeP=${atmCeP} atmPeP=${atmPeP} iv=${atmIVdhan.toFixed(1)}%`);
+  } else {
+    console.log('[dhan-oc] no data — DHAN_CLIENT_ID/ACCESS_TOKEN not set or call failed');
+  }
+
+  // ── Source 1: Kite /quote (fallback — requires paid Kite Connect plan) ───
+  const kiteOCData = gv(kiteOCR);
+  if (!atmCeP && kiteOCData && kiteOCData.atmCeP > 0 && atm > 0) {
     pcr      = kiteOCData.pcr;
     callWall = kiteOCData.callWall;
     putWall  = kiteOCData.putWall;
@@ -540,7 +607,7 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey, kiteD
 
   // ── Source 2: NSE (fallback if Kite OC failed) ───────────────────────────
   const ocData = gv(ocJ);
-  if (!kiteOCData?.atmCeP && ocData?.records?.data && atm > 0) {
+  if (!atmCeP && !kiteOCData?.atmCeP && ocData?.records?.data && atm > 0) {
     nseSrc = 'NSE';
     const tExp=expiry.nseStr, nxExp=expiryNx.nseStr;
     const ocRows=ocData.records.data.filter(r=>r.expiryDate===tExp);
@@ -578,7 +645,7 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey, kiteD
   // When Kite is IP-blocked and NSE is geo-blocked, fetch ATM option price
   // directly from Yahoo Finance chart API using the NSE tradingsymbol.
   // Format: NIFTY02JUN24000CE.NS (Yahoo uses .NS suffix for NSE)
-  if (!atmCeP && !atmPeP && atm > 0) {
+  if (!atmCeP && !atmPeP && atm > 0) {  // Yahoo direct + chain fallback
     try {
       nseSrc = 'Yahoo-Direct';
       // Build ATM CE and PE symbols in Yahoo NSE format
