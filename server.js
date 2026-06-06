@@ -16,6 +16,7 @@ import omkarSessionHandler   from './api/omkar-kite-session.js';
 import placeOrderHandler     from './api/place-order.js';
 import placeGttHandler       from './api/place-gtt.js';
 import healthHandler         from './api/health.js';
+import dhanOcHandler         from './api/dhan-oc.js';
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -50,6 +51,7 @@ app.all('/api/omkar-kite-session', adapt(omkarSessionHandler));
 app.all('/api/place-order',        adapt(placeOrderHandler));
 app.all('/api/place-gtt',          adapt(placeGttHandler));
 app.all('/api/health',             adapt(healthHandler));
+app.all('/api/dhan-oc',            adapt(dhanOcHandler));
 
 // Health check
 app.get('/', (req, res) => res.json({
@@ -69,5 +71,7 @@ app.listen(PORT, () => {
   console.log(`   KITE_API_KEY:  ${process.env.KITE_API_KEY     ? '✓ loaded' : '✗ MISSING'}`);
   console.log(`   GROQ_API_KEY:  ${process.env.GROQ_API_KEY     ? '✓ loaded' : '✗ MISSING'}`);
   console.log(`   ANTHROPIC_KEY: ${process.env.ANTHROPIC_API_KEY? '✓ loaded' : '✗ MISSING'}`);
+  console.log(`   DHAN_CLIENT:   ${process.env.DHAN_CLIENT_ID   ? '✓ loaded' : '✗ not set (add to .env for F2/F9 data)'}`);
+  console.log(`   DHAN_TOKEN:    ${process.env.DHAN_ACCESS_TOKEN? '✓ loaded' : '✗ not set'}`);
   console.log(`\n   Whitelist this IP in Kite: check https://api.ipify.org\n`);
 });

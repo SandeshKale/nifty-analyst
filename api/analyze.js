@@ -539,9 +539,12 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey, kiteD
   ocTable    +='-------|--------|------------|----------|--------|------------|----------\n';
 
   // ── Source 0: Dhan option chain (PRIMARY — free, global, full OI+IV+Greeks) ──
+  // Dhan v2 OC response: { "status": "success", "data": { "23400": { "CE": {...}, "PE": {...} } } }
+  // Field names in Dhan v2: CE.OI, CE.LTP, CE.ImpliedVolatility, CE.OIChange
   const dhanRaw  = gv(dhanOCJ);
-  const dhanOC   = dhanRaw?.data?.oc || dhanRaw?.oc || null;
-  const dhanSpot = dhanRaw?.data?.last_price || dhanRaw?.last_price || 0;
+  // Log raw response structure for debugging on first call
+  if (dhanRaw) console.log('[dhan-oc] raw status:', dhanRaw.status, 'keys:', Object.keys(dhanRaw.data||{}).slice(0,3).join(','));
+  const dhanOC   = dhanRaw?.status === 'success' ? (dhanRaw.data || null) : null;
   if (dhanOC && atm > 0) {
     nseSrc = 'Dhan';
     const ocEntries = Object.entries(dhanOC);
@@ -549,15 +552,21 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey, kiteD
     const fc = n => (n>=0?'+':'')+String(Math.round(n)).padStart(8);
 
     for (const [strikeStr, sd] of ocEntries) {
-      const st   = Math.round(parseFloat(strikeStr));
-      const ce   = sd.ce || {}, pe = sd.pe || {};
-      const ceOI = ce.oi||0, peOI = pe.oi||0;
-      const ceOIChg = ceOI-(ce.previous_oi||0), peOIChg = peOI-(pe.previous_oi||0);
+      const st = Math.round(parseFloat(strikeStr));
+      // Dhan v2 uses uppercase field names: CE, PE
+      const ce = sd.CE || sd.ce || {};
+      const pe = sd.PE || sd.pe || {};
+      const ceOI = parseInt(ce.OI || ce.oi || 0);
+      const peOI = parseInt(pe.OI || pe.oi || 0);
+      const ceLTP = parseFloat(ce.LTP || ce.ltp || ce.last_price || 0);
+      const peLTP = parseFloat(pe.LTP || pe.ltp || pe.last_price || 0);
+      const ceOIChg = parseInt(ce.OIChange || ce.changeInOI || 0);
+      const peOIChg = parseInt(pe.OIChange || pe.changeInOI || 0);
       totCeOI += ceOI; totPeOI += peOI;
       if (ceOI > mxCeOI) { mxCeOI=ceOI; callWall=st; }
       if (peOI > mxPeOI) { mxPeOI=peOI; putWall=st; }
       if (Math.abs(st-atm) <= 500)
-        ocTable += `${String(st).padStart(6)} | ${String((ce.last_price||0).toFixed(0)).padStart(6)} | ${String(ceOI).padStart(10)} | ${fc(ceOIChg)} | ${String((pe.last_price||0).toFixed(0)).padStart(6)} | ${String(peOI).padStart(10)} | ${fc(peOIChg)}\n`;
+        ocTable += `${String(st).padStart(6)} | ${String(ceLTP.toFixed(0)).padStart(6)} | ${String(ceOI).padStart(10)} | ${fc(ceOIChg)} | ${String(peLTP.toFixed(0)).padStart(6)} | ${String(peOI).padStart(10)} | ${fc(peOIChg)}\n`;
     }
 
     pcr = totCeOI>0 ? (totPeOI/totCeOI).toFixed(3) : '0';
@@ -567,23 +576,29 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey, kiteD
     let minLoss=Infinity;
     for (const target of dStrikes) {
       let loss=0;
-      for (const [s,sd] of ocEntries) { const st=Math.round(parseFloat(s)); if(target<st)loss+=(sd.ce?.oi||0)*(st-target); if(target>st)loss+=(sd.pe?.oi||0)*(target-st); }
+      for (const [s,sd2] of ocEntries) {
+        const st=Math.round(parseFloat(s));
+        const ceOI2=parseInt(sd2.CE?.OI||sd2.ce?.oi||0), peOI2=parseInt(sd2.PE?.OI||sd2.pe?.oi||0);
+        if(target<st)loss+=ceOI2*(st-target); if(target>st)loss+=peOI2*(target-st);
+      }
       if(loss<minLoss){minLoss=loss;maxPain=target;}
     }
 
-    // ATM premiums — try exact strike, then string with decimals
-    const atmKeys = [`${atm}`,`${atm}.000000`,`${atm}.0`];
+    // ATM premiums
+    const atmKeys = [`${atm}`,`${atm}.0`,`${atm}.00`];
     let atmEnt = null;
     for (const k of atmKeys) { if(dhanOC[k]){atmEnt=dhanOC[k];break;} }
     if(!atmEnt) { const found=ocEntries.find(([s])=>Math.round(parseFloat(s))===atm); if(found) atmEnt=found[1]; }
     if (atmEnt) {
-      atmCeP    = atmEnt.ce?.last_price || 0;
-      atmPeP    = atmEnt.pe?.last_price || 0;
-      atmIVdhan = atmEnt.ce?.implied_volatility || atmEnt.pe?.implied_volatility || 0;
+      const ce=atmEnt.CE||atmEnt.ce||{}, pe=atmEnt.PE||atmEnt.pe||{};
+      atmCeP    = parseFloat(ce.LTP||ce.ltp||ce.last_price||0);
+      atmPeP    = parseFloat(pe.LTP||pe.ltp||pe.last_price||0);
+      atmIVdhan = parseFloat(ce.ImpliedVolatility||ce.IV||ce.iv||pe.ImpliedVolatility||pe.IV||0);
     }
-    console.log(`[dhan-oc] ok — pcr=${pcr} callWall=${callWall} putWall=${putWall} maxPain=${maxPain} atmCeP=${atmCeP} atmPeP=${atmPeP} iv=${atmIVdhan.toFixed(1)}%`);
+    console.log(`[dhan-oc] ok — pcr=${pcr} callWall=${callWall} putWall=${putWall} atmCeP=${atmCeP} atmPeP=${atmPeP} iv=${atmIVdhan}`);
   } else {
-    console.log('[dhan-oc] no data — DHAN_CLIENT_ID/ACCESS_TOKEN not set or call failed');
+    if (!dhanRaw) console.log('[dhan-oc] no response — DHAN credentials not set or request failed');
+    else console.warn('[dhan-oc] unexpected response:', JSON.stringify(dhanRaw).slice(0,150));
   }
 
   // ── Source 1: Kite /quote (fallback — requires paid Kite Connect plan) ───
@@ -645,7 +660,7 @@ async function runAnalysis(req, res, accessToken, useDeepSeek, kiteApiKey, kiteD
   // When Kite is IP-blocked and NSE is geo-blocked, fetch ATM option price
   // directly from Yahoo Finance chart API using the NSE tradingsymbol.
   // Format: NIFTY02JUN24000CE.NS (Yahoo uses .NS suffix for NSE)
-  if (!atmCeP && !atmPeP && atm > 0) {  // Yahoo direct + chain fallback
+  if (!atmCeP && !atmPeP && atm > 0) {  // last resort  // Yahoo direct + chain fallback
     try {
       nseSrc = 'Yahoo-Direct';
       // Build ATM CE and PE symbols in Yahoo NSE format

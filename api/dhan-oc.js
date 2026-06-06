@@ -1,201 +1,98 @@
 // api/dhan-oc.js
-// Dhan API option chain — free, globally accessible, no IP whitelist needed.
-// Returns full OC data: LTP, OI, OI change, IV, Greeks for all strikes.
-// Used as primary source for F2 (PCR/OI) and F9 (IVP/IV) in analyze.js.
-//
-// Endpoints used:
-//   POST /v2/optionchain/expirylist — get available expiry dates
-//   POST /v2/optionchain           — get full OC for a specific expiry
-//
-// Nifty 50 constants:
-//   UnderlyingScrip: 13  (Nifty 50 security ID in Dhan)
-//   UnderlyingSeg:   IDX_I
+// Fetches NIFTY option chain from Dhan API — free, no IP restriction, global access
+// Provides: PCR, call/put walls, max pain, ATM CE/PE premiums, OI per strike, IV
+// Used as primary source for F2 (PCR/OI) and F9 (IVP)
 
-const DHAN_BASE = 'https://api.dhan.co/v2';
-
-async function dhanFetch(path, clientId, accessToken, body, timeout = 8000) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeout);
-  try {
-    const res = await fetch(`${DHAN_BASE}${path}`, {
-      method:  'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'access-token': accessToken,
-        'client-id':    clientId,
-      },
-      body:    JSON.stringify(body),
-      signal:  ctrl.signal,
-    });
-    clearTimeout(timer);
-    if (!res.ok) {
-      const err = await res.text().catch(() => '');
-      throw new Error(`Dhan ${path} HTTP ${res.status}: ${err.slice(0, 120)}`);
-    }
-    return await res.json();
-  } catch(e) {
-    clearTimeout(timer);
-    throw e;
-  }
-}
-
-// Fetch nearest weekly expiry date from Dhan
-async function getDhanExpiries(clientId, accessToken) {
-  const data = await dhanFetch('/optionchain/expirylist', clientId, accessToken, {
-    UnderlyingScrip: 13,    // Nifty 50
-    UnderlyingSeg:  'IDX_I',
-  });
-  // Returns array of date strings: ["2026-06-09", "2026-06-16", ...]
-  return data?.data || [];
-}
-
-// Fetch full option chain for a specific expiry date
-async function getDhanOC(clientId, accessToken, expiryDate) {
-  const data = await dhanFetch('/optionchain', clientId, accessToken, {
-    UnderlyingScrip: 13,
-    UnderlyingSeg:  'IDX_I',
-    Expiry:          expiryDate,   // "YYYY-MM-DD"
-  });
-  return data?.data || null;
-}
-
-// Main export: fetch and parse Dhan OC into the format analyze.js expects
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+  if (req.method !== 'POST')   { return res.status(405).json({ error: 'Method not allowed' }); }
 
-  const { expiryDate, spot } = req.body || {};
-
-  const clientId    = process.env.DHAN_CLIENT_ID;
-  const accessToken = process.env.DHAN_ACCESS_TOKEN;
-
-  if (!clientId || !accessToken) {
+  const clientId = process.env.DHAN_CLIENT_ID;
+  const token    = process.env.DHAN_ACCESS_TOKEN;
+  if (!clientId || !token) {
     return res.status(500).json({ error: 'DHAN_CLIENT_ID or DHAN_ACCESS_TOKEN not configured' });
   }
 
+  const { expiry, spot } = req.body;
+  if (!expiry) return res.status(400).json({ error: 'expiry required (YYYY-MM-DD)' });
+
+  const headers = {
+    'access-token': token,
+    'client-id':    clientId,
+    'Content-Type': 'application/json',
+  };
+
   try {
-    // Step 1: Get expiry list if no date provided
-    let targetExpiry = expiryDate;
-    if (!targetExpiry) {
-      const expiries = await getDhanExpiries(clientId, accessToken);
-      if (!expiries.length) throw new Error('No expiries returned from Dhan');
-      // Pick nearest weekly expiry (first in list)
-      targetExpiry = expiries[0];
-      console.log(`[dhan-oc] using nearest expiry: ${targetExpiry}`);
+    const r = await fetch('https://api.dhan.co/v2/optionchain', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ UnderlyingScrip: 13, UnderlyingSeg: 'IDX_I', Expiry: expiry }),
+    });
+
+    if (!r.ok) {
+      const errText = await r.text().catch(() => '');
+      console.warn(`[dhan-oc] API error ${r.status}: ${errText.slice(0,120)}`);
+      return res.status(r.status).json({ error: `Dhan API error: ${r.status}`, detail: errText.slice(0,200) });
     }
 
-    // Step 2: Fetch full option chain
-    const ocData = await getDhanOC(clientId, accessToken, targetExpiry);
-    if (!ocData?.oc) throw new Error('No OC data in Dhan response');
+    const data = await r.json();
+    if (data.status !== 'success' || !data.data) {
+      return res.status(400).json({ error: 'Dhan OC returned no data', raw: data });
+    }
 
-    const spotPrice = spot || ocData.last_price || 0;
-    const atmStrike = spotPrice ? Math.round(spotPrice / 50) * 50 : 0;
-
-    // Step 3: Parse into analyze.js format
-    let totCeOI = 0, totPeOI = 0;
-    let maxCeOI = 0, maxPeOI = 0;
+    const ocRaw    = data.data;
+    const atmStrike = spot ? Math.round(spot / 50) * 50 : null;
+    let totCeOI = 0, totPeOI = 0, maxCeOI = 0, maxPeOI = 0;
     let callWall = atmStrike, putWall = atmStrike;
     let atmCeP = 0, atmPeP = 0, atmCeIV = 0, atmPeIV = 0;
-
     const rows = {};
-    for (const [strikeStr, strikeData] of Object.entries(ocData.oc)) {
-      const strike = Math.round(parseFloat(strikeStr));
-      const ce = strikeData.ce || {};
-      const pe = strikeData.pe || {};
 
-      rows[strike] = {
-        ce: {
-          ltp:    ce.last_price      || 0,
-          oi:     ce.oi              || 0,
-          prevOi: ce.previous_oi     || 0,
-          oiChg:  (ce.oi||0) - (ce.previous_oi||0),
-          iv:     ce.implied_volatility || 0,
-          delta:  ce.greeks?.delta   || 0,
-          theta:  ce.greeks?.theta   || 0,
-        },
-        pe: {
-          ltp:    pe.last_price      || 0,
-          oi:     pe.oi              || 0,
-          prevOi: pe.previous_oi     || 0,
-          oiChg:  (pe.oi||0) - (pe.previous_oi||0),
-          iv:     pe.implied_volatility || 0,
-          delta:  pe.greeks?.delta   || 0,
-          theta:  pe.greeks?.theta   || 0,
-        },
-      };
-
-      // Accumulate OI totals
-      const ceOI = ce.oi || 0;
-      const peOI = pe.oi || 0;
-      totCeOI += ceOI;
-      totPeOI += peOI;
-
-      // Track walls (highest OI strikes)
+    for (const [strikeStr, sides] of Object.entries(ocRaw)) {
+      const strike = parseInt(strikeStr);
+      const ce = sides.CE || sides.ce || {};
+      const pe = sides.PE || sides.pe || {};
+      const ceLTP  = parseFloat(ce.LTP  || ce.ltp  || 0);
+      const peLTP  = parseFloat(pe.LTP  || pe.ltp  || 0);
+      const ceOI   = parseInt(ce.OI     || ce.oi   || 0);
+      const peOI   = parseInt(pe.OI     || pe.oi   || 0);
+      const ceIV   = parseFloat(ce.ImpliedVolatility || ce.IV || ce.iv || 0);
+      const peIV   = parseFloat(pe.ImpliedVolatility || pe.IV || pe.iv || 0);
+      const ceOIChg = parseInt(ce.OIChange || ce.changeInOI || 0);
+      const peOIChg = parseInt(pe.OIChange || pe.changeInOI || 0);
+      rows[strike] = { ce: { ltp:ceLTP,oi:ceOI,oiChg:ceOIChg,iv:ceIV }, pe: { ltp:peLTP,oi:peOI,oiChg:peOIChg,iv:peIV } };
+      totCeOI += ceOI; totPeOI += peOI;
       if (ceOI > maxCeOI) { maxCeOI = ceOI; callWall = strike; }
       if (peOI > maxPeOI) { maxPeOI = peOI; putWall  = strike; }
-
-      // ATM premiums
-      if (strike === atmStrike) {
-        atmCeP  = ce.last_price || 0;
-        atmPeP  = pe.last_price || 0;
-        atmCeIV = ce.implied_volatility || 0;
-        atmPeIV = pe.implied_volatility || 0;
-      }
+      if (atmStrike && strike === atmStrike) { atmCeP=ceLTP; atmPeP=peLTP; atmCeIV=ceIV; atmPeIV=peIV; }
     }
 
-    // PCR
-    const pcr = totCeOI > 0 ? (totPeOI / totCeOI).toFixed(3) : '0';
-
-    // Max pain
-    const sortedStrikes = Object.keys(rows).map(Number).sort((a,b) => b - a);
-    let maxPain = atmStrike, minLoss = Infinity;
+    const sortedStrikes = Object.keys(rows).map(Number).sort((a,b) => b-a);
+    let maxPain = atmStrike || sortedStrikes[Math.floor(sortedStrikes.length/2)], minLoss = Infinity;
     for (const target of sortedStrikes) {
       let loss = 0;
       for (const st of sortedStrikes) {
-        if (target < st) loss += (rows[st].ce.oi) * (st - target);
-        if (target > st) loss += (rows[st].pe.oi) * (target - st);
+        if (target < st) loss += rows[st].ce.oi * (st - target);
+        if (target > st) loss += rows[st].pe.oi * (target - st);
       }
       if (loss < minLoss) { minLoss = loss; maxPain = target; }
     }
 
-    // ATM IV (use CE IV, fall back to PE)
+    const pcr = totCeOI > 0 ? (totPeOI/totCeOI).toFixed(3) : '0';
     const atmIV = atmCeIV || atmPeIV || 0;
-
-    // Build OC table string (same format as NSE parser)
-    const fc = n => (n >= 0 ? '+' : '') + String(Math.round(n)).padStart(8);
+    const fc = n => (n>=0?'+':'')+String(Math.round(n)).padStart(8);
     let ocTable = 'Strike | CE_LTP | CE_OI      | OI_CHG   | PE_LTP | PE_OI      | OI_CHG\n';
     ocTable    += '-------|--------|------------|----------|--------|------------|----------\n';
-
-    // Show ±10 strikes around ATM
-    const nearStrikes = sortedStrikes.filter(st => Math.abs(st - atmStrike) <= 500);
-    for (const st of nearStrikes) {
-      const { ce, pe } = rows[st];
-      const marker = st === atmStrike ? ' ← ATM' : st === callWall ? ' ← CALL WALL' : st === putWall ? ' ← PUT WALL' : '';
-      ocTable += `${String(st).padStart(6)} | ${String(ce.ltp.toFixed(0)).padStart(6)} | ${String(ce.oi).padStart(10)} | ${fc(ce.oiChg)} | ${String(pe.ltp.toFixed(0)).padStart(6)} | ${String(pe.oi).padStart(10)} | ${fc(pe.oiChg)}${marker}\n`;
+    const displayStrikes = atmStrike ? sortedStrikes.filter(s=>Math.abs(s-atmStrike)<=500) : sortedStrikes.slice(0,20);
+    for (const st of displayStrikes) {
+      const {ce,pe} = rows[st];
+      ocTable += `${String(st).padStart(6)} | ${String((ce?.ltp||0).toFixed(0)).padStart(6)} | ${String(ce?.oi||0).padStart(10)} | ${fc(ce?.oiChg||0)} | ${String((pe?.ltp||0).toFixed(0)).padStart(6)} | ${String(pe?.oi||0).padStart(10)} | ${fc(pe?.oiChg||0)}\n`;
     }
 
-    console.log(`[dhan-oc] ok — expiry=${targetExpiry} spot=${spotPrice} atm=${atmStrike} atmCeP=${atmCeP} atmPeP=${atmPeP} pcr=${pcr} atmIV=${atmIV.toFixed(1)}%`);
-
-    return res.json({
-      status:    'success',
-      expiry:    targetExpiry,
-      spotPrice,
-      atmStrike,
-      atmCeP,
-      atmPeP,
-      atmIV,
-      pcr,
-      callWall,
-      putWall,
-      maxPain,
-      totCeOI,
-      totPeOI,
-      ocTable,
-      rows,       // full strike data for IVP computation
-      src:        'Dhan',
-    });
+    console.log(`[dhan-oc] ok — strikes=${sortedStrikes.length} atmCeP=${atmCeP} atmPeP=${atmPeP} pcr=${pcr} callWall=${callWall} putWall=${putWall} atmIV=${atmIV}`);
+    return res.json({ status:'success', pcr, callWall, putWall, maxPain, atmCeP, atmPeP, atmIV, totCeOI, totPeOI, ocTable, strikeCount:sortedStrikes.length, src:'Dhan' });
 
   } catch(err) {
     console.error('[dhan-oc] error:', err.message);
